@@ -44,11 +44,24 @@ import {
   useProjection,
   type MapProjection,
 } from './projection';
-import { LAYERS, renderLayer, type LayerId } from '../render/layers';
+import { renderLayer, type LayerId } from '../render/layers';
 import { Legend } from './Legend';
-import type { EraWorld, TempoNote, WorkerResponse } from '../worker/protocol';
+import type { EraWorld, WorkerResponse } from '../worker/protocol';
 import type { AppError } from '../worker/protocol';
 import { WorldComputeService } from '../worker/client';
+import {
+  getWorldSession,
+  invalidateSimulation,
+  newGeneration,
+  sessionFailed,
+  setSessionParams,
+  setShownEdits,
+  simulationReady,
+  simulationStarted,
+  useWorldSession,
+  worldReady,
+} from '../session/worldSession';
+import type { EraWorlds } from '../session/worldSession';
 import type { Civ } from '../gen/civ/types';
 import { CivLayer } from './CivLayer';
 import { CivTimeline } from './CivTimeline';
@@ -106,11 +119,10 @@ import {
   type Intervention,
   type TerrainOp,
   type Upheaval,
-  type WorldEdits,
 } from '../gen/edits';
 import { sameTerrain, sameUpheavals } from '../gen/terrainEdits';
 import type { RasterPatch } from '../gen/rasterPatch';
-import { baseRegions, civAtEra, dropComposed, eraData, eraIndex, eraMapsOf, eraReady, eraShown, patchKey, reuseRegions, useEraIndex, withHistory, type EraMaps } from './eras';
+import { baseRegions, civAtEra, dropComposed, eraData, eraIndex, eraMapsOf, eraReady, eraShown, patchKey, reuseRegions, useEraIndex, withHistory } from './eras';
 import { sameSketch, type SketchEdit } from '../gen/sketch';
 import { clearEditHistory, clearEdits, getEdits, removeIntervention, removeUpheaval, setEditGate, setEdits, undoTerrainOp, useEdits } from './editsStore';
 import { redoLastEdit, undoLastEdit } from './undo';
@@ -125,14 +137,12 @@ import {
   cleanTitle,
   decodeShare,
   editCount,
-  GEN_KEY,
   isShareHash,
   parseSave,
   versionNote,
   worldCheck,
   worldKey,
   type ParseResult,
-  type SaveFile,
   type SaveOrigin,
   type SaveView,
 } from '../gen/savefile';
@@ -147,9 +157,6 @@ import {
   detachWorld,
   importSave,
   isStored,
-  isWorldId,
-  legacyWorld,
-  listWorlds,
   loadWorld,
   markCreated,
   markOpened,
@@ -167,8 +174,6 @@ import {
   updateCheck,
   useSavesVersion,
   viewChanged,
-  type StoredWorld,
-  type WorldKind,
 } from './saveStore';
 import { getStage, setStage, useStage, type DraftBase, type Stage } from './stageStore';
 import { polityAlive } from '../gen/civ/growth';
@@ -214,7 +219,7 @@ import { PhoneSheet } from './PhoneSheet';
 import { useLayerThumbs } from './LayerPopover';
 import { WorldOverview } from './WorldOverview';
 import { hoverInfo, probeLines, type HoverInfo } from './hoverInfo';
-import { layerDark, layerDef, layerFromUrl, layerOf, type MapLayer, type Style } from './mapLayers';
+import { layerDark, layerDef, layerOf, type MapLayer, type Style } from './mapLayers';
 import {
   TerrainOverlay,
   getTerrainTool,
@@ -234,157 +239,7 @@ import { UpheavalHint, UpheavalOverlay } from './UpheavalPanel';
 import { dismissing, tookDismissClick } from './dismissClick';
 import { makeFlagView, setFlagView, useFlagPreview } from './flagStore';
 import { noteGenSpeed } from './genSpeed';
-
-type Replay = { w: number; h: number; frames: Uint8ClampedArray[]; mya: number[]; idx: number };
-
-function readUrl() {
-  const q = new URLSearchParams(location.search);
-  const params: WorldParams = { ...DEFAULT_PARAMS };
-  for (const k of Object.keys(DEFAULT_PARAMS) as (keyof WorldParams)[]) {
-    const v = q.get(k);
-    if (v !== null && !Number.isNaN(Number(v))) params[k] = Number(v);
-  }
-  // 画风 / 数据图层:旧链接的 style=、layer= 照旧;没有 style= 时 layer= 是新的图层名(政区、民族……,见 mapLayers.ts)
-  const qs = q.get('style');
-  const ql = q.get('layer');
-  const mapLayer = layerFromUrl(q);
-  let style: Style = qs === 'realistic' || qs === 'data' ? qs : 'fantasy';
-  let layer: LayerId = LAYERS.some((l) => l.id === ql) ? (ql as LayerId) : 'biomes';
-  if (mapLayer) {
-    const d = layerDef(mapLayer);
-    style = d.style;
-    if (d.data) layer = d.data;
-  }
-  // 分享链接:# 后面是整份存档(gen/savefile.ts 的 encodeShare)
-  const share = isShareHash(location.hash) ? location.hash : null;
-  // 分享短链接(网站/s/<码> 转过来的 ?s=<码>):存档在服务器上,打开时去取
-  const shortShare = q.get('s');
-  // 投影、中央经线(改了就写进网址,刷新、复制网址都还在)
-  // 地球仪以前写的是 view=globe,照样认
-  const pq = q.get('proj') ?? (q.get('view') === 'globe' ? 'globe' : null);
-  const proj: MapProjection = isMapProjection(pq) && (pq !== 'globe' || GLOBE_READY) ? pq : 'equirect';
-  const lq = Number(q.get('lon'));
-  const lon = q.get('lon') !== null && Number.isFinite(lq) ? wrapLon(lq) : null;
-  const grat = q.get('grat') === '1';
-  // 生成器版本(gen=):这个网址是哪一版画出来的世界;和现在的不同,打开时说清变了什么。旧网址没有 = 不知道,不提示;
-  // 带了却认不出(不是整数之类)当成第 0 版:认不出的旧版本,照样提示,也不当成没带 gen 的老网址
-  const gq = q.get(GEN_KEY);
-  const gen = gq === null ? null : /^\d{1,6}$/.test(gq) ? Number(gq) : 0;
-  return { params, style, layer, mapLayer, share, shortShare, proj, lon, grat, gen };
-}
-
-/**
- * 换了图层:写进网址(layer= 新的图层名;去掉旧的 style=,civ= 里的国家 / 民族 / 信仰开关交给图层管),刷新、复制网址都还在
- */
-function writeLayerUrl(id: MapLayer) {
-  const q = new URLSearchParams(location.search);
-  q.delete('style');
-  const civ = q.get('civ');
-  if (civ !== null) {
-    const rest = civ.split(/[,+ ]/).filter((k) => k && !/^-?(polities|cultures|faiths)$/.test(k));
-    if (rest.length) q.set('civ', rest.join(','));
-    else q.delete('civ');
-  }
-  // 默认的"政区"可以省掉(没有 civ= 时才省:有 civ= 的旧链接按它认图层)
-  if (id === 'political' && !q.has('civ')) q.delete('layer');
-  else q.set('layer', id);
-  const next = `?${q}`;
-  if (next !== location.search) history.replaceState(null, '', next);
-}
-
-/** 一个要打开的世界:生成(或直接用正在看的这一个)→ 套上修改 → 交给 saveStore 自动存 */
-interface Target {
-  id: string;
-  kind: WorldKind;
-  params: WorldParams;
-  edits: WorldEdits;
-  /** 已经存下的修改(套上的和它是同一个对象就不重写) */
-  saved?: WorldEdits;
-  title?: string;
-  /** 新建中、作者还没动过(不存) */
-  pristine?: boolean;
-  /** 以某个世界为底稿新建 */
-  base?: DraftBase | null;
-  /** 换成存档里的投影和中央经线(undefined = 不动;null = 等距圆柱、0°) */
-  view?: SaveView | null;
-  /** 从哪打开的(生成完的提示按它说) */
-  from?: 'file' | 'link' | 'stored' | 'restore' | 'url';
-  /** 网址里带的生成器版本(from = 'url':打开带种子的网址) */
-  gen?: number;
-  /** 打开的存档(核对版本、地形) */
-  save?: SaveFile;
-  /** 读档时的警告 */
-  warnings?: string[];
-  /** 从分享短链接打开的:它的码(还没存进我的世界时留在网址里,刷新再取一次,看到分享的人最新的改动) */
-  shareCode?: string;
-  /** 底稿出处(存档里带着的;打开别人的分享短链接时是那个链接,改了另存时写进去) */
-  origin?: SaveOrigin | null;
-}
-
-/** 随机一个种子(新建世界、"换一颗") */
-function randomSeedValue(): number {
-  return Math.floor(Math.random() * 999999) + 1;
-}
-
-/** 新建中的世界现在的样子(参数、修改、名字),比较动没动过用 */
-function draftSig(params: WorldParams, edits: WorldEdits, title?: string): string {
-  return JSON.stringify([worldKey(params), edits, title ?? '']);
-}
-
-/** 一个新建中的世界(还没动过) */
-function draftTarget(params: WorldParams, base: DraftBase | null = null, edits: WorldEdits = EMPTY_EDITS, title?: string): Target {
-  return { id: newWorldId(), kind: 'draft', params, edits, pristine: true, base, title };
-}
-
-/** 存着的一个世界(刷新页面回到它时投影照网址,不换) */
-function storedTarget(w: StoredWorld, from: 'stored' | 'restore'): Target {
-  return {
-    id: w.id,
-    kind: w.draft ? 'draft' : 'created',
-    params: w.save.params,
-    edits: w.save.edits,
-    saved: w.save.edits,
-    title: w.save.title,
-    base: w.base ?? null,
-    pristine: false,
-    view: from === 'restore' ? undefined : (w.save.view ?? null),
-    from,
-    save: w.save,
-    origin: w.save.origin ?? null,
-  };
-}
-
-/** 网址里带种子的(别人发的网址、截图脚本):直接看这个世界,先不存,改了才存 */
-function visitTarget(params: WorldParams, gen: number | null = null): Target {
-  const t: Target = { id: newWorldId(), kind: 'visit', params, edits: EMPTY_EDITS };
-  return gen === null ? t : { ...t, from: 'url', gen };
-}
-
-/**
- * 打开网页时去哪(只算一次):
- *   分享短链接(s=)    → 先是一页空白,去服务器取存档;取到了打开那个世界,停了显示"这个分享已经停止了"
- *   分享链接(#)       → 那个世界(先按网址生成,解开以后套上修改)
- *   w=世界编号(存着)   → 这个世界(没建完的回到新建)
- *   new=1             → 新建(网址里的种子、参数)
- *   带种子的网址       → 直接看这个世界(改版前存过的就回到那个存档)
- *   都没有             → 我的世界(第一次来是空的那一页:一颗地球、一句话、「新建世界」;点了才生成星球)
- */
-function firstRoute(init: ReturnType<typeof readUrl>): { stage: Stage; target: Target | null } {
-  const q = new URLSearchParams(location.search);
-  if (init.shortShare !== null && !init.share) return { stage: 'home', target: null };
-  if (init.share) return { stage: 'world', target: visitTarget(init.params) };
-  const w = q.get('w');
-  const stored = isWorldId(w) ? loadWorld(w) : null;
-  if (stored) return { stage: stored.draft ? 'draft' : 'world', target: storedTarget(stored, 'restore') };
-  if (q.get('new') === '1') return { stage: 'draft', target: draftTarget(init.params) };
-  if (q.has('seed')) {
-    // 改版前自动存的世界:那时的网址只带种子、参数,刷新照旧回到它(带 gen= 的是改版后的网址,不是它)
-    const old = init.gen === null ? legacyWorld(init.params) : null;
-    if (old) return { stage: old.draft ? 'draft' : 'world', target: storedTarget(old, 'restore') };
-    return { stage: 'world', target: visitTarget(init.params, init.gen) };
-  }
-  return { stage: 'home', target: null };
-}
+import { draftSig, draftTarget, firstRoute, randomSeedValue, readUrl, storedTarget, storyOk, writeHomeUrl, writeLayerUrl, writeWorldUrl, type Target } from './route';
 
 /** 新建时能看的样式(不用历史的那几种) */
 const STUDIO_LAYERS: MapLayer[] = STUDIO_STYLES.map((x) => x.id);
@@ -392,46 +247,7 @@ const STUDIO_LAYERS: MapLayer[] = STUDIO_STYLES.map((x) => x.id);
 /** 新建时列不出来的图层(要有历史):进新建时换成"地形",建好以后换回来 */
 const HISTORY_LAYERS: MapLayer[] = ['political', 'cultures', 'faith'];
 
-/** 把世界写进网址:种子 + 参数(和默认值相同的省略,别人打开是同一颗星球);存着的加 w=编号,新建中还没存的加 new=1 */
-function writeWorldUrl(t: Target) {
-  const q = new URLSearchParams(location.search);
-  for (const k of Object.keys(DEFAULT_PARAMS) as (keyof WorldParams)[]) {
-    if (k === 'seed' || t.params[k] !== DEFAULT_PARAMS[k]) q.set(k, String(t.params[k]));
-    else q.delete(k);
-  }
-  q.delete('w');
-  q.delete('new');
-  q.delete('s');
-  // 分享短链接打开的、还没存进我的世界:码留在网址里(刷新再取一次)
-  if (t.shareCode && t.kind === 'visit' && !isStored(t.id)) q.set('s', t.shareCode);
-  // 存着的记录还是换参数之前的(新建中换了种子、参数,正在生成):先不指向它,存好了再换成 w=
-  const w = isStored(t.id) ? loadWorld(t.id) : null;
-  if (w && worldKey(w.save.params) === worldKey(t.params)) q.set('w', t.id);
-  else if (t.kind === 'draft') q.set('new', '1');
-  // 生成器版本:复制这个网址发给别人,以后版本更新了对方打开会说清变了什么。
-  // 网址来自更新的版本(页面是旧的)就留着那个号:刷新还是旧页面照样提示,换到新页面就对上了。
-  // 新建中还没存的(new=1)不带:打开这种网址是接着新建,用的总是现在的版本
-  if (q.has('new')) q.delete(GEN_KEY);
-  else q.set(GEN_KEY, String(t.gen !== undefined && t.gen > GENERATOR_VERSION ? t.gen : GENERATOR_VERSION));
-  const next = `?${q}`;
-  if (next !== location.search) history.replaceState(null, '', next);
-}
-
-/** 回到"我的世界":网址里去掉这个世界(种子、参数、编号、年份……),留着图层、投影这些看法 */
-function writeHomeUrl() {
-  const q = new URLSearchParams(location.search);
-  for (const k of [...Object.keys(DEFAULT_PARAMS), 'w', 'new', 's', GEN_KEY, 'civYear', 'play', 'chron']) q.delete(k);
-  const rest = q.toString();
-  history.replaceState(null, '', rest ? `?${rest}` : location.pathname);
-}
-
-/** 创建完要不要从第 0 年起放一遍历史(网址给了 play=0、无头浏览器里不放;play=1 一定放) */
-function storyOk(): boolean {
-  const play = new URLSearchParams(location.search).get('play');
-  if (play === '0') return false;
-  if (play === '1') return true;
-  return !(typeof navigator !== 'undefined' && navigator.webdriver);
-}
+type Replay = { w: number; h: number; frames: Uint8ClampedArray[]; mya: number[]; idx: number };
 
 /** 主线程最多留多少块各段的主图补丁(换了地形大事、撤销回去时用得上;先丢最早的) */
 const PATCH_KEEP = 24;
@@ -482,7 +298,13 @@ export function App() {
   const curved = isCurved(projection);
   const mapCenter = useMapCenter();
   const projMoving = useMapMoving() && curved;
-  const [params, setParams] = useState<WorldParams>(route.target?.params ?? init.params);
+  /**
+   * 世界的真值(编号、参数、身体、文明、状态、版本)在会话里(session/worldSession.ts):界面订阅它,
+   * 非界面的代码(worker 回执、存档、助手)也读同一份。下面这些是给界面用的现成名字
+   */
+  const session = useWorldSession();
+  /** 当前这个世界的参数(会话里的;还没开始生成时先用刚解析出来的那一份,首帧就能画) */
+  const params = session.params ?? route.target?.params ?? init.params;
   const [style, setStyle] = useState<Style>(start.style);
   const [layer, setLayer] = useState<LayerId>(start.layer);
   const { stage, base: stageBase } = useStage();
@@ -500,14 +322,14 @@ export function App() {
   const targetRef = useRef<Target | null>(route.target);
   /** 新建中的名字(卡片上的输入框;打开没建完的世界时是它存的名字) */
   const [draftTitle, setDraftTitle] = useState(route.target?.kind === 'draft' ? (route.target.title ?? '') : '');
-  /** 生成出来的世界和主图(地形大事以前的;地图上画的是 data:时间轴那一段的) */
-  const [baseData, setData] = useState<{ world: World; raster: Raster } | null>(null);
-  /** 地形大事以后各段的世界(后台线程交来的;没有大事 = null)、各段主图的补丁(后台慢慢铺好交来;eras.ts) */
-  const [eraMaps, setEraMaps] = useState<EraMaps | null>(null);
+  /** 生成出来的世界和主图(会话里的 body;地形大事以前的。地图上画的是 data:时间轴那一段的) */
+  const baseData = session.body;
+  /** 地形大事以后各段的世界(会话里的 eras;没有大事 = null)、各段主图的补丁(后台慢慢铺好交来;eras.ts) */
+  const eraMaps = session.eras;
   const eraPatches = useRef(new Map<string, RasterPatch | null>());
   const [patchVer, setPatchVer] = useState(0);
-  // 生成出来的文明("原始 civ")+ 用户的改名(editsStore)= 界面用的 civ。改名只重算这一步,不发给后台线程
-  const [rawCiv, setRawCiv] = useState<Civ | null>(null);
+  // 生成出来的文明("原始 civ",会话里的)+ 用户的改名(editsStore)= 界面用的 civ。改名只重算这一步,不发给后台线程
+  const rawCiv = session.civ;
   const edits = useEdits();
   // 助手的"先在地图上看看":地图、卡片、时间轴换成试推演的历史(州和宜居度和现在共用;作者的世界没动,rawCiv 还是原来的)
   const astOpen = useAstOpen();
@@ -630,8 +452,6 @@ export function App() {
   const workerErrRef = useRef<(e: AppError) => void>(() => {});
   /** 试推演发到第几次了(协议里的 tid;回执按 requestId 对上号,这个是和线程那边对齐口径用的) */
   const trialSeq = useRef(0);
-  /** 世界的编号(协议里的 id;每换一个世界加一 —— 和 requestId 不是一回事,别再混用) */
-  const reqId = useRef(0);
   // ---- 阶段 4 干预:带着干预在后台重推文明 ----
   /** 最近一次请求的文明是带着哪些干预推的(生成新世界时 = 没有) */
   const civEdits = useRef<readonly Intervention[]>(EMPTY_EDITS.interventions);
@@ -645,7 +465,6 @@ export function App() {
   /** 读档 / 自动恢复套上的地形大事(按它重推完不提示) */
   const restoredUps = useRef<readonly Upheaval[] | undefined | null>(null);
   /** 第几次重推(只认最新的一次);这次重推从哪一年起变、什么时候发出去的 */
-  const resimSeq = useRef(0);
   /** 读档 / 自动恢复套上的干预列表(按它重推完不提示"已生效"、不打断自动播放) */
   const restoredIv = useRef<readonly Intervention[] | null>(null);
   const resimInfo = useRef<{
@@ -670,9 +489,7 @@ export function App() {
   /** 正在按新的干预重推历史(缩略图等推完再截) */
   const resimRef = useRef(false);
   resimRef.current = !!resim;
-  const rawRef = useRef<Civ | null>(null);
-  rawRef.current = rawCiv;
-  /** 当前这个世界(编号 reqId.current)的参数;回放时带给线程,线程重开过也能按参数重算 */
+  /** 当前这个世界的参数;回放时带给线程,线程重开过也能按参数重算 */
   const genParams = useRef<WorldParams | null>(null);
   // ---- 阶段 4 改地形:世界 = 参数 + 地形修改 ----
   /** 最近一次请求的世界带着哪些地形修改(回放、重推时带给线程) */
@@ -718,10 +535,6 @@ export function App() {
   const readyRef = useRef<(world: World, civ: Civ) => void>(() => {});
   const dataRef = useRef(data);
   dataRef.current = data;
-  /** 生成出来的世界(地形大事以前的;线程回调里用) */
-  const baseRef = useRef(baseData);
-  const eraMapsRef = useRef(eraMaps);
-  eraMapsRef.current = eraMaps;
   /** 弯边投影:当前投影 + 中心放进地图平面(等距圆柱 = null,照原来的办法画) */
   const mp = useMemo(() => (data ? curvedProj(projection, mapCenter, data.world.width, data.world.height) : null), [data, projection, mapCenter]);
   const mpRef = useRef<MapProj | null>(mp);
@@ -735,7 +548,7 @@ export function App() {
   /** 回执的总处理:服务已按 requestId 对上号,这里再按世界的编号、各自的序号丢掉过时的 */
   replyRef.current = (m: WorkerResponse) => {
     if (m.type === 'trial') return; // 试推演由等着它的那条 promise 收(setTrialRunner);世界换了的话那边已经停下
-    if (m.id !== reqId.current) return; // 过时的请求(上一个世界的)
+    if (m.id !== getWorldSession().worldId) return; // 过时的请求(上一个世界的)
     if (m.type === 'eraPatch') {
       // 一段的主图补丁:记下,地图那一段换上(eras.ts);最多留 PATCH_KEEP 块,先丢最早的(现在这份历史要用的不丢;
       // 丢了的以后又要用,下一次推演时线程看 have 里没有会重新铺)
@@ -743,7 +556,7 @@ export function App() {
       const k = patchKey(m.prev, m.key);
       map.delete(k);
       map.set(k, m.patch);
-      const cur = eraMapsRef.current;
+      const cur = getWorldSession().eras;
       const keep = new Set(cur ? cur.keys.map((key, i) => patchKey(i ? cur.keys[i - 1] : cur.baseKey, key)) : []);
       for (const old of [...map.keys()]) if (map.size > PATCH_KEEP && !keep.has(old)) map.delete(old);
       setPatchVer((v) => v + 1);
@@ -756,11 +569,9 @@ export function App() {
       // 换了世界:各段的主图补丁都作废
       eraPatches.current.clear();
       dropComposed();
-      baseRef.current = { world: m.world, raster: m.raster };
-      setData(baseRef.current);
-      setEraMaps(m.eras ? eraMapsOf(m.world, m.baseKey, m.eras) : null);
       rawUps.current = genUps.current;
-      setRawCiv(m.civ);
+      // 会话换上新的世界 + 像素 + 各段世界 + 文明(状态 = ready)
+      worldReady({ world: m.world, raster: m.raster }, m.civ, m.eras ? eraMapsOf(m.world, m.baseKey, m.eras) : null);
       setProgress(null);
       const rg = regenRef.current;
       if (rg && rg.id === m.id) terrainDoneRef.current(m.world, m.civ, m.ms);
@@ -771,12 +582,13 @@ export function App() {
     } else if (m.type === 'history') {
       setReplay({ w: m.w, h: m.h, frames: m.frames, mya: m.mya, idx: 0 });
     } else if (m.type === 'civ') {
-      if (m.seq !== resimSeq.current) return; // 又下了新的干预,等最新的那一次
+      if (m.seq !== getWorldSession().simulationVersion) return; // 又下了新的干预,等最新的那一次
       applyResimRef.current(m.civ, m.ms, m.eras, m.baseKey);
     }
   };
   /** 线程报错:说明白出了什么事(结构化错误,worker/client.ts 的 onError),而不是让进度条停在那里 */
   workerErrRef.current = (e: AppError) => {
+    sessionFailed(e); // 会话记一笔(状态 = error),界面同时说一句
     showToast({ id: 'worker', kind: 'error', text: '计算线程出错', more: [e.message] });
     setProgress(null);
   };
@@ -793,17 +605,17 @@ export function App() {
   useEffect(() => {
     setTrialRunner((interventions, signal) => {
       const p = genParams.current;
-      if (!p || !rawRef.current) return Promise.reject(new Error('世界还没生成好'));
+      if (!p || !getWorldSession().civ) return Promise.reject(new Error('世界还没生成好'));
       if (signal?.aborted) return Promise.reject(new Error('已停下'));
       const tid = ++trialSeq.current;
       const ups = civUps.current;
-      const job = compute.trial({ type: 'trial', id: reqId.current, tid, params: p, terrain: [...genTerrain.current], sketch: genSketch.current, interventions: [...interventions], ...upsOpt(ups) });
+      const job = compute.trial({ type: 'trial', id: getWorldSession().worldId, tid, params: p, terrain: [...genTerrain.current], sketch: genSketch.current, interventions: [...interventions], ...upsOpt(ups) });
       const onAbort = () => job.cancel('已停下');
       signal?.addEventListener('abort', onAbort, { once: true });
       return job.result.then(
         (m) => {
           signal?.removeEventListener('abort', onAbort);
-          const old = rawRef.current;
+          const old = getWorldSession().civ;
           return old ? reuseRegions(old, m.civ, sameUpheavals(ups, rawUps.current)) : m.civ;
         },
         (e: AppError) => {
@@ -819,7 +631,7 @@ export function App() {
     setUpRunner((pid, year, ops) => {
       const p = genParams.current;
       if (!p) return;
-      compute.previewUpheaval({ type: 'upPreview', id: reqId.current, pid, params: p, terrain: [...genTerrain.current], sketch: genSketch.current, ...upsOpt(rawUps.current), year, ops: [...ops] });
+      compute.previewUpheaval({ type: 'upPreview', id: getWorldSession().worldId, pid, params: p, terrain: [...genTerrain.current], sketch: genSketch.current, ...upsOpt(rawUps.current), year, ops: [...ops] });
     });
     return () => setUpRunner(null);
   }, [compute]);
@@ -882,15 +694,15 @@ export function App() {
    * 选中的东西、编年史的国家筛选按稳定键换成新历史里的编号(指不到就取消),时间轴停在干预那一年
    */
   const applyResim = (next: Civ, workerMs: number, eras: EraWorld[] | undefined, baseKey: string) => {
-    const old = rawRef.current;
+    const old = getWorldSession().civ;
     const sameUps = sameUpheavals(civUps.current, rawUps.current);
     const civ: Civ = old ? reuseRegions(old, next, sameUps) : next;
     rawUps.current = civUps.current;
-    // 地形大事以后各段的世界:和现在一样(只改了干预)就不换,地图不用重画
-    const base = baseRef.current;
-    const cur = eraMapsRef.current;
-    if (!eras?.length || !base) setEraMaps(null);
-    else if (!cur || cur.baseKey !== baseKey || cur.keys.join('|') !== eras.map((e) => e.key).join('|')) setEraMaps(eraMapsOf(base.world, baseKey, eras));
+    // 地形大事以后各段的世界:和现在一样(只改了干预)就不换,地图不用重画(undefined = 会话里那份不动)
+    const base = getWorldSession().body;
+    const cur = getWorldSession().eras;
+    const nextEras: EraWorlds | null | undefined =
+      !eras?.length || !base ? null : !cur || cur.baseKey !== baseKey || cur.keys.join('|') !== eras.map((e) => e.key).join('|') ? eraMapsOf(base.world, baseKey, eras) : undefined;
     if (old) remapSelection(old, civ);
     clearChroniclePick();
     setPolityPick(null);
@@ -973,7 +785,8 @@ export function App() {
         showToast({ id: 'resim-done', kind: 'ok', text: info.left ? `已撤销,从 ${y} 年起重新推演` : `已撤销,${y} 年之后恢复原历史`, ttl: 4000 });
       }
     }
-    setRawCiv(civ);
+    // 会话换上重推好的文明(各段世界按上面算的 nextEras:undefined = 不动、null = 清掉),状态 = ready
+    simulationReady(civ, nextEras);
     setResim(null);
   };
   const applyResimRef = useRef(applyResim);
@@ -985,9 +798,9 @@ export function App() {
     (t: Target) => {
       targetRef.current = t;
       const p = t.params;
-      const id = ++reqId.current;
       genParams.current = p;
-      setParams(p);
+      // 会话换一代:世界的编号 +1(回执按它丢掉上一个世界的)、参数换上、状态 = generating
+      const id = newGeneration(p);
       setProgress({ stage: '准备', pct: 0, seed: p.seed });
       // 手机:新世界、打开存档都要看地图 —— 拉到顶的世界卡片先收起来
       setWorldSheet('peek');
@@ -998,8 +811,7 @@ export function App() {
       fresh.current = true;
       regenRef.current = null;
       setTerrainStatus({ busy: false });
-      setShownTerrain(terrain);
-      setShownSketch(t.edits.sketch);
+      setShownEdits(terrain, t.edits.sketch);
       setTerrainTool({ on: false });
       closeUpheaval();
       compute.generate({ type: 'generate', id, params: p, scale: 1, terrain: [...terrain], sketch: t.edits.sketch });
@@ -1007,7 +819,7 @@ export function App() {
       detachWorld();
       civEdits.current = EMPTY_EDITS.interventions;
       civUps.current = genUps.current = undefined;
-      resimSeq.current++;
+      invalidateSimulation();
       resimInfo.current = null;
       setResim(null);
       setPolityPick(null);
@@ -1058,14 +870,15 @@ export function App() {
     const t = edits.terrain;
     const sk = edits.sketch;
     if (!baseData || !genParams.current || fresh.current || (sameTerrain(t, genTerrain.current) && sameSketch(sk, genSketch.current))) return;
-    const id = ++reqId.current;
+    // 换一代(参数没变):编号 +1、状态 = generating
+    const id = newGeneration();
     const interventions = getEdits().interventions;
     const ups = getEdits().upheavals;
     genTerrain.current = t;
     genSketch.current = sk;
     civEdits.current = interventions;
     civUps.current = genUps.current = ups;
-    resimSeq.current++;
+    invalidateSimulation();
     resimInfo.current = null;
     setResim(null);
     regenRef.current = { id, t0: performance.now(), terrain: t, sketch: sk };
@@ -1102,7 +915,7 @@ export function App() {
     const year = years.length ? Math.max(0, Math.min(...years)) : 0;
     civEdits.current = list;
     civUps.current = ups;
-    const seq = ++resimSeq.current;
+    const seq = simulationStarted();
     // 只多了一条 = 新下的干预 / 新加的大事;只少了一条 = 撤销(读档、自动恢复套上的不算,不提示)
     const quiet = list === restoredIv.current && ups === restoredUps.current;
     const one = changed.length + upChanged.length === 1;
@@ -1115,7 +928,7 @@ export function App() {
     setResim({ year });
     compute.resimulate({
       type: 'resim',
-      id: reqId.current,
+      id: getWorldSession().worldId,
       seq,
       params: genParams.current,
       terrain: [...genTerrain.current],
@@ -1154,8 +967,7 @@ export function App() {
     rg.workerMs = ms;
     rg.arrived = performance.now() - rg.t0;
     lastReady.current = { world, civ: rc };
-    setShownTerrain(rg.terrain);
-    setShownSketch(rg.sketch);
+    setShownEdits(rg.terrain, rg.sketch);
     const e = getEdits();
     if (sameTerrain(e.terrain, rg.terrain) && sameSketch(e.sketch, rg.sketch)) updateCheck(worldCheck(world));
     const lostNames = Object.keys(e.names).filter((k) => !resolveKey(rc, k)).length;
@@ -1202,11 +1014,11 @@ export function App() {
   useEffect(() => {
     setThumbMaker((id) => {
       const t = targetRef.current;
-      const b = baseRef.current;
+      const b = getWorldSession().body;
       if (!dataRef.current || !b || fresh.current || regenRef.current || resimRef.current || !t || t.id !== id) return null;
-      const kEnd = eraIndex(rawRef.current, null);
-      if (!eraReady(eraMapsRef.current, eraPatches.current, kEnd)) return null;
-      const d = eraData(b, eraMapsRef.current, eraPatches.current, kEnd);
+      const kEnd = eraIndex(getWorldSession().civ, null);
+      if (!eraReady(getWorldSession().eras, eraPatches.current, kEnd)) return null;
+      const d = eraData(b, getWorldSession().eras, eraPatches.current, kEnd);
       const base = baseCanvas('fantasy', d);
       if (!base) return null;
       const cv = document.createElement('canvas');
@@ -1216,7 +1028,7 @@ export function App() {
       if (!x) return null;
       x.imageSmoothingQuality = 'high';
       x.drawImage(base, 0, 0, cv.width, cv.height);
-      const rc = rawRef.current;
+      const rc = getWorldSession().civ;
       const kind = currentWorld()?.kind;
       if (kind !== 'draft' && rc && rc.viable && rc.habitat.suitability.length === d.world.mesh.n) {
         const ov = document.createElement('canvas');
@@ -1374,7 +1186,7 @@ export function App() {
     setWorldSheet('peek');
     enterStage(t.kind === 'draft' ? 'draft' : 'world', t.kind === 'draft' ? (t.base ?? null) : null);
     if (t.kind === 'draft') setDraftTitle(t.title ?? '');
-    setParams(t.params);
+    setSessionParams(t.params);
     if (sameGen(t.params, t.edits.terrain, t.edits.sketch)) {
       if (fresh.current) {
         targetRef.current = t;
@@ -1382,10 +1194,11 @@ export function App() {
         return;
       }
       const last = lastReady.current;
-      if (!regenRef.current && last && rawRef.current) {
+      if (!regenRef.current && last && getWorldSession().civ) {
         detachWorld();
         targetRef.current = t;
-        readyRef.current(last.world, rawRef.current);
+        const rc = getWorldSession().civ!; // 上面看过 rawCiv 在了
+        readyRef.current(last.world, rc);
         writeWorldUrl(t);
         return;
       }
@@ -1528,7 +1341,8 @@ export function App() {
     draftLayerRef.current = null;
     applyLayer('political');
     writeWorldUrl(targetRef.current);
-    if (rawRef.current) setWorldStats(aliveAtEnd(rawRef.current));
+    const rc = getWorldSession().civ;
+    if (rc) setWorldStats(aliveAtEnd(rc));
     refreshThumb();
     const keep = persistent();
     showToast({
@@ -1763,7 +1577,7 @@ export function App() {
     prepareCivReplay(); // 文明层先退回第 0 年,等地质放完再接着放文明
     setReplayOn(true);
     if (replay) setReplay({ ...replay, idx: 0 });
-    else compute.history({ type: 'history', id: reqId.current, params: genParams.current, terrain: [...genTerrain.current], sketch: genSketch.current });
+    else compute.history({ type: 'history', id: getWorldSession().worldId, params: genParams.current, terrain: [...genTerrain.current], sketch: genSketch.current });
   };
   /** 弯边投影:回放帧先放在离屏的等距圆柱原图上,再按投影铺到屏幕上 */
   const overlayProj = useRef(new ProjLayer());
@@ -3231,7 +3045,7 @@ export function App() {
   useLayoutEffect(() => {
     const was = prevPreview.current;
     prevPreview.current = previewRaw;
-    const real = rawRef.current;
+    const real = getWorldSession().civ;
     const from = was ?? real;
     const to = previewRaw ?? real;
     if (was === previewRaw || !from || !to || from === to) return;
