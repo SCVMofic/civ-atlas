@@ -14,80 +14,24 @@
  * 各段的主图太大,不整张交:交完文明以后在后台逐段铺整张主图、和上一段比,只交回变了的那一块(gen/rasterPatch.ts 的补丁,
  * 主线程有了的不再交);后台的活排在消息后面,有新消息先处理消息。
  * "会怎么样"预览(upPreview):照"那一年的地形 + 这几笔"生成一遍,和那一年的地形、州逐地块比(previewUpheaval)。
+ *
+ * 消息约定在 worker/protocol.ts(和主线程共用的那一份):每条请求带 requestId,回执原样带回去。
+ * 某条请求处理时抛异常:先回一条可序列化的 { type: 'error', requestId, error }(界面据此说明白出了什么事,
+ * 而不是进度条停在那里),再按老样子把它抛到线程的 error 事件上。
  */
-import { generateWorld, type World, type WorldParams } from './gen/world';
-import { finishGully, rasterizeDeferred, type Raster } from './gen/raster';
-import { GullyPool } from './gullyPool';
-import { buildHistoryFrames, type HistoryFrames } from './gen/history';
-import { DEFAULT_CIV_PARAMS, generateCiv, civTransferables, planetTempo, type Civ, type Regions } from './gen/civ';
-import type { Intervention, TerrainOp, Upheaval } from './gen/edits';
-import { sketchGrid, type SketchEdit } from './gen/sketch';
-import { mergeUpheavals, previewUpheaval, type UpheavalPreview, type UpheavalStep } from './gen/civ/upheaval';
-import { computeHabitat } from './gen/civ/habitat';
-import { buildRegions, reshapeRegions } from './gen/civ/regions';
-import { diffRaster, patchTransferables, type RasterPatch } from './gen/rasterPatch';
-
-/**
- * 一组参数 + 草图(没改地形的星球)的扩张节拍(gen/civ 的 planetTempo;null = 长不出文明),key = 这颗星球在线程里的键。
- * 线程推文明后回报给主线程,主线程下次生成、重推时带回来:线程被重开过也不用多生成一遍没改过的地形
- */
-export interface TempoNote {
-  key: string;
-  tempo: number | null;
-}
-
-/**
- * 地形大事以后的一段世界(按年份先后;第 k 段 = 套上前 k + 1 件大事以后的)。key = 这一段在线程里的键(主图补丁按它对上);
- * world 不带网格(和原来的世界是同一套,主线程接上自己那份)、不带回放快照
- */
-export interface EraWorld {
-  key: string;
-  world: World;
-}
-
-/** 推文明的请求里共有的:地形修改、草图、干预、地形大事、主线程记着的扩张节拍 */
-interface CivInput {
-  params: WorldParams;
-  terrain?: TerrainOp[];
-  sketch?: SketchEdit;
-  /** 地形大事(不给 = 没有) */
-  upheavals?: Upheaval[];
-  tempo?: TempoNote;
-  /** 主线程已经有了的主图补丁("上一段的键>这一段的键");没给的才在后台铺 */
-  have?: string[];
-}
-
-export type WorkerRequest =
-  /**
-   * 生成世界。terrain = 地形修改(不给 = 没改);sketch = 草图(不给 = 没画);interventions = 推文明时带上的干预(改地形重新生成时用;不给 = 没有);
-   * tempo = 主线程记着的扩张节拍(星球对不上就不用)
-   */
-  | ({ type: 'generate'; id: number; scale: number; interventions?: Intervention[] } & CivInput)
-  /** 回放帧。带上参数:线程被重开过、手里没有这个世界时,按参数重新生成(同参数 = 同世界) */
-  | { type: 'history'; id: number; params: WorldParams; terrain?: TerrainOp[]; sketch?: SketchEdit }
-  /**
-   * 阶段 4 干预:只重推文明(世界已在线程里,不重新生成地形;线程被重开过就按参数重新生成)。
-   * seq = 第几次重推(主线程只认最新的一次)
-   */
-  | ({ type: 'resim'; id: number; seq: number; interventions: Intervention[] } & CivInput)
-  /** 试推演(助手用):和 resim 一样重推(同样带节拍),但只把结果交回去,主线程不换上它;tid = 第几次试推演 */
-  | ({ type: 'trial'; id: number; tid: number; interventions: Intervention[] } & CivInput)
-  /** 地形大事的预览:upheavals = 已经有的大事,在 year 那一年再加上 ops 会怎么样;pid = 第几次预览(主线程只认最新的) */
-  | { type: 'upPreview'; id: number; pid: number; params: WorldParams; terrain?: TerrainOp[]; sketch?: SketchEdit; upheavals?: Upheaval[]; year: number; ops: TerrainOp[] };
-
-export type WorkerResponse =
-  | { type: 'progress'; id: number; stage: string; pct: number }
-  /** ms = 线程里花的时间(生成 + 文明 + 铺像素),genMs = 其中生成世界那一步;tempo = 这组参数的扩张节拍(知道的话);eras = 地形大事以后的各段世界(没有大事 = 不给) */
-  | { type: 'done'; id: number; world: World; raster: Raster; civ: Civ; ms: number; genMs: number; tempo?: TempoNote; eras?: EraWorld[]; baseKey: string }
-  | ({ type: 'history'; id: number } & HistoryFrames)
-  /** 重推好的文明;ms = 线程里花的时间(含按参数重新生成世界);tempo、eras 同 done */
-  | { type: 'civ'; id: number; seq: number; civ: Civ; ms: number; tempo?: TempoNote; eras?: EraWorld[]; baseKey: string }
-  /** 试推演的结果;tempo 同 done */
-  | { type: 'trial'; id: number; tid: number; civ: Civ; ms: number; tempo?: TempoNote }
-  /** 一段的主图补丁:key 这一段比 prev 那一段(原来的世界或上一件大事以后)变了的那一块;null = 看不出变化 */
-  | { type: 'eraPatch'; id: number; key: string; prev: string; patch: RasterPatch | null }
-  /** 地形大事的预览;water = 加上这几笔以后各地块的海陆(0 陆地 / 1 海 / 2 湖) */
-  | { type: 'upPreview'; id: number; pid: number; preview: UpheavalPreview; water: Uint8Array; ms: number };
+import { generateWorld, type World, type WorldParams } from '../gen/world';
+import { finishGully, rasterizeDeferred, type Raster } from '../gen/raster';
+import { GullyPool } from '../gullyPool';
+import { buildHistoryFrames } from '../gen/history';
+import { DEFAULT_CIV_PARAMS, generateCiv, civTransferables, planetTempo, type Civ, type Regions } from '../gen/civ';
+import type { Intervention, TerrainOp, Upheaval } from '../gen/edits';
+import { sketchGrid, type SketchEdit } from '../gen/sketch';
+import { mergeUpheavals, previewUpheaval, type UpheavalStep } from '../gen/civ/upheaval';
+import { computeHabitat } from '../gen/civ/habitat';
+import { buildRegions, reshapeRegions } from '../gen/civ/regions';
+import { diffRaster, patchTransferables } from '../gen/rasterPatch';
+import type { TempoNote, EraWorld, CivInput, WorkerRequest, WorkerResponse } from './protocol';
+import { serializeError } from './protocol';
 
 /** 上一个生成的世界(含回放快照),回放时直接用 */
 let last: { key: string; world: World } | null = null;
@@ -228,7 +172,7 @@ async function rasterOfWorld(key: string, world: () => World): Promise<Raster> {
 }
 
 /** 推完文明:主线程手里没有的各段补丁排进后台(之前排着、现在用不上的作废) */
-function queuePatches(id: number, m: CivInput, steps: Step[]) {
+function queuePatches(requestId: string, id: number, m: CivInput, steps: Step[]) {
   bg.length = 0;
   const have = new Set(m.have ?? []);
   let prevKey = keyOf(m.params, m.terrain, m.sketch);
@@ -245,7 +189,7 @@ function queuePatches(id: number, m: CivInput, steps: Step[]) {
       const ra = await rasterOfWorld(a, wa);
       const rb = await rasterOfWorld(s.key, () => s.world);
       const patch = diffRaster(ra, rb);
-      post({ type: 'eraPatch', id, key: s.key, prev: a, patch }, patch ? patchTransferables(patch) : []);
+      post({ type: 'eraPatch', requestId, id, key: s.key, prev: a, patch }, patch ? patchTransferables(patch) : []);
     });
   }
 }
@@ -275,6 +219,9 @@ async function pump() {
         if (m) await handle(m);
         else await bg.shift()!();
       } catch (err) {
+        // 这条请求的活失败了:先回一条可序列化的错误(界面据此说明白,而不是进度条停在那里);
+        // 后台的活(各段主图)没有对应的请求,和以前一样只报到线程的 error 事件上
+        if (m) post({ type: 'error', requestId: m.requestId, id: m.id, error: serializeError(err) });
         // 和以前同步处理时一样,出错报到线程的 error 事件上
         setTimeout(() => {
           throw err;
@@ -289,6 +236,7 @@ async function pump() {
 }
 
 async function handle(m: WorkerRequest): Promise<void> {
+  const rid = m.requestId;
   if (m.type !== 'history' && m.type !== 'upPreview') takeTempo(m.params, m.sketch, m.tempo);
   if (m.type === 'generate') {
     // 换了世界:后台排着的补丁和记着的整图都作废
@@ -296,16 +244,16 @@ async function handle(m: WorkerRequest): Promise<void> {
     rasters.clear();
     await pool.up;
     const t0 = performance.now();
-    const world = generateWorld(m.params, (stage, pct) => post({ type: 'progress', id: m.id, stage, pct }), m.terrain, sketchGrid(m.sketch));
+    const world = generateWorld(m.params, (stage, pct) => post({ type: 'progress', requestId: rid, id: m.id, stage, pct }), m.terrain, sketchGrid(m.sketch));
     last = { key: keyOf(m.params, m.terrain, m.sketch), world };
-    const steps = stepsOf(m.params, m.terrain, m.sketch, m.upheavals, (k, n) => post({ type: 'progress', id: m.id, stage: '地形大事', pct: 0.9 + (0.03 * k) / n }));
+    const steps = stepsOf(m.params, m.terrain, m.sketch, m.upheavals, (k, n) => post({ type: 'progress', requestId: rid, id: m.id, stage: '地形大事', pct: 0.9 + (0.03 * k) / n }));
     const genMs = performance.now() - t0;
     // 先铺像素(山坡上的沟和山脊交给帮手线程),同时推文明
-    post({ type: 'progress', id: m.id, stage: '铺展地图', pct: 0.93 });
+    post({ type: 'progress', requestId: rid, id: m.id, stage: '铺展地图', pct: 0.93 });
     const { raster, job } = rasterizeDeferred(world, m.scale);
     const { heights, result: civ } = await pool.run(job, () => {
       // 文明骨架(宜居度、州……)只读 World,之后的文明步骤都在 gen/civ/index.ts 里接
-      post({ type: 'progress', id: m.id, stage: '文明', pct: 0.95 });
+      post({ type: 'progress', requestId: rid, id: m.id, stage: '文明', pct: 0.95 });
       const c = generateCiv(world, { interventions: m.interventions?.length ? m.interventions : undefined, tempo: tempoOf(m.params, m.terrain, m.sketch), ...upOpt(steps) });
       if (!m.terrain?.length) rememberTempo(m.params, m.sketch, c.spreadYears ?? null);
       return c;
@@ -317,11 +265,11 @@ async function handle(m: WorkerRequest): Promise<void> {
     const { history: _history, ...rest } = world;
     void _history;
     const baseKey = keyOf(m.params, m.terrain, m.sketch);
-    post({ type: 'done', id: m.id, world: { ...rest, history: [] }, raster, civ, ms: performance.now() - t0, genMs, tempo: noteOf(m.params, m.sketch), eras: eraWorlds(steps), baseKey }, transfer);
-    queuePatches(m.id, m, steps);
+    post({ type: 'done', requestId: rid, id: m.id, world: { ...rest, history: [] }, raster, civ, ms: performance.now() - t0, genMs, tempo: noteOf(m.params, m.sketch), eras: eraWorlds(steps), baseKey }, transfer);
+    queuePatches(rid, m.id, m, steps);
   } else if (m.type === 'history') {
     const h = buildHistoryFrames(worldOf(m.params, m.terrain, m.sketch));
-    post({ type: 'history', id: m.id, ...h }, h.frames.map((f) => f.buffer));
+    post({ type: 'history', requestId: rid, id: m.id, ...h }, h.frames.map((f) => f.buffer));
   } else if (m.type === 'resim' || m.type === 'trial') {
     const t0 = performance.now();
     const world = worldOf(m.params, m.terrain, m.sketch);
@@ -330,9 +278,9 @@ async function handle(m: WorkerRequest): Promise<void> {
     const ms = performance.now() - t0;
     const tempo = noteOf(m.params, m.sketch);
     if (m.type === 'resim') {
-      post({ type: 'civ', id: m.id, seq: m.seq, civ, ms, tempo, eras: eraWorlds(steps), baseKey: keyOf(m.params, m.terrain, m.sketch) }, civTransferables(civ));
-      queuePatches(m.id, m, steps);
-    } else post({ type: 'trial', id: m.id, tid: m.tid, civ, ms, tempo }, civTransferables(civ));
+      post({ type: 'civ', requestId: rid, id: m.id, seq: m.seq, civ, ms, tempo, eras: eraWorlds(steps), baseKey: keyOf(m.params, m.terrain, m.sketch) }, civTransferables(civ));
+      queuePatches(rid, m.id, m, steps);
+    } else post({ type: 'trial', requestId: rid, id: m.id, tid: m.tid, civ, ms, tempo }, civTransferables(civ));
   } else if (m.type === 'upPreview') {
     const t0 = performance.now();
     const steps = stepsOf(m.params, m.terrain, m.sketch, m.upheavals);
@@ -340,6 +288,6 @@ async function handle(m: WorkerRequest): Promise<void> {
     const w1 = cachedWorld(m.params, [...at.ops, ...m.ops], m.sketch).world;
     const preview = previewUpheaval(at.world, at.regions, w1, m.ops, REGION_AREA);
     const water = w1.water.slice();
-    post({ type: 'upPreview', id: m.id, pid: m.pid, preview, water, ms: performance.now() - t0 }, [water.buffer]);
+    post({ type: 'upPreview', requestId: rid, id: m.id, pid: m.pid, preview, water, ms: performance.now() - t0 }, [water.buffer]);
   }
 }
