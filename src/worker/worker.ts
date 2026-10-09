@@ -23,7 +23,7 @@ import { generateWorld, type World, type WorldParams } from '../gen/world';
 import { finishGully, rasterizeDeferred, type Raster } from '../gen/raster';
 import { GullyPool } from '../gullyPool';
 import { buildHistoryFrames } from '../gen/history';
-import { DEFAULT_CIV_PARAMS, generateCiv, civTransferables, planetTempo, type Civ, type Regions } from '../gen/civ';
+import { DEFAULT_CIV_PARAMS, civTransferables, planetTempo, type Civ, type Regions } from '../gen/civ';
 import { simulation } from '../simulation/simulation';
 import type { Intervention, TerrainOp, Upheaval } from '../gen/edits';
 import { sketchGrid, type SketchEdit } from '../gen/sketch';
@@ -255,7 +255,7 @@ async function handle(m: WorkerRequest): Promise<void> {
     const { heights, result: civ } = await pool.run(job, () => {
       // 文明骨架(宜居度、州……)只读 World,之后的文明步骤都在 gen/civ/index.ts 里接
       post({ type: 'progress', requestId: rid, id: m.id, stage: '文明', pct: 0.95 });
-      const c = generateCiv(world, { interventions: m.interventions?.length ? m.interventions : undefined, tempo: tempoOf(m.params, m.terrain, m.sketch), ...upOpt(steps) });
+      const c = simulation.run({ world, params: { interventions: m.interventions?.length ? m.interventions : undefined, tempo: tempoOf(m.params, m.terrain, m.sketch), ...upOpt(steps) } });
       if (!m.terrain?.length) rememberTempo(m.params, m.sketch, c.spreadYears ?? null);
       return c;
     });
