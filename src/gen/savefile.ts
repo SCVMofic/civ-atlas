@@ -53,7 +53,10 @@ import { decodeFlag } from './civ/flags';
 import { CHARACTERS_MAX, cleanCharacters, type AuthorCharacter } from './characters';
 
 export const SAVE_APP = '文明与地图';
-/** 存档格式版本 */
+/**
+ * 存档格式版本。加一时注意:旧版网站读不了更新格式的存档,打开文件、分享链接读进来的存档已经换成了现在的格式,
+ * 「看原样」(ui/oldSite.ts)交给旧版网站之前要换回它认得的格式
+ */
 export const SAVE_FORMAT = 1;
 
 export interface SaveFile {

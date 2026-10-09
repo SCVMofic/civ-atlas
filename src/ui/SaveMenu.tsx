@@ -6,6 +6,7 @@
  *   复制分享链接:整份存档压缩进网址的 # 后面(gen/savefile.ts 的 encodeShare),复制到剪贴板;
  *     没有修改 = 普通网址(只带种子、参数);剪贴板用不了:菜单留着,里面多一行选中了链接的输入框,让用户自己复制
  *   登录了网站账号:当前世界那一行写同步到账号了没有;"复制分享链接"换成"分享…"(短链接,随时能停,AccountDialogs.tsx 的分享窗)
+ *   看原样:旧版本建的世界(留着原来那一份,saveStore 的 currentOriginal)到那一版的旧网站里打开,新页面(oldSite.ts)
  *
  * 存、读、列都在 saveStore.ts。存储满了之类的提示(saveStore 的 notify)显示在顶部的提示条上。
  * ⌘S 打开这个菜单(openSaveMenu;世界本来就自动存着,菜单上写着存没存好)。
@@ -14,7 +15,8 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { GEN_KEY, SHARE_WARN_LENGTH, editCount, encodeShare, hasShareData, saveFileName, saveText, type SaveFile } from '../gen/savefile';
 import { GENERATOR_VERSION } from '../gen/edits';
 import { useEdits } from './editsStore';
-import { addFileSaver, currentSave, currentWorld, loadWorld, notify, persistent, storageIsFull, useSavesVersion } from './saveStore';
+import { addFileSaver, currentOriginal, currentSave, currentWorld, loadWorld, notify, persistent, storageIsFull, useSavesVersion } from './saveStore';
+import { oldSiteFor, openOriginal } from './oldSite';
 import { Icon } from './icons';
 import { noteDismiss } from './dismissClick';
 import { copyText } from './clipboard';
@@ -214,6 +216,14 @@ export function SaveMenu({ ready, icon }: SaveMenuProps) {
         : curStored
           ? { cls: 'ok', text: '已自动存在这个浏览器里' }
           : { cls: '', text: '还没存进我的世界；改了名字或历史就会自动存' };
+  // 旧版本建的世界:能到那一版的旧网站里看原样(菜单开着才找)
+  const orig = open && cur ? currentOriginal() : null;
+  const site = orig ? oldSiteFor(orig.generator) : null;
+  const seeOriginal = () => {
+    if (!orig || !site) return;
+    setOpen(false);
+    void openOriginal(orig).then((ok) => ok || notify({ kind: 'error', text: '这个浏览器打不开', more: [`请把世界存成文件，到 ${site.href} 打开`] }));
+  };
   const share = () => {
     if (!cur) return;
     setOpen(false);
@@ -266,6 +276,15 @@ export function SaveMenu({ ready, icon }: SaveMenuProps) {
               <span>
                 <b>复制分享链接</b>
                 <small>{count || title ? '对方打开看到同一个世界、同样的修改' : '还没有修改，只带种子和参数'}</small>
+              </span>
+            </button>
+          )}
+          {site && (
+            <button className="save-it" data-act="see-original" onClick={seeOriginal}>
+              <Icon name="history" size={17} />
+              <span>
+                <b>看原样</b>
+                <small>这个世界是旧版建的，在新页面里用当时的版本打开</small>
               </span>
             </button>
           )}

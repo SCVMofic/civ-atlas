@@ -46,6 +46,12 @@
   font-size: 13.5px;
   color: var(--ink-2);
 }
+/* 旧版网站:标题上面的「旧版」标记(不在地图上,不用毛玻璃,浅灰底) */
+.mw-heading > .old-badge {
+  margin-bottom: 14px;
+  background: var(--btn);
+  box-shadow: none;
+}
 /* 那句话后面的蓝字「全部存成文件」(手机上另起一行);要压过上面 .mw button 的 color: inherit */
 .mw .mw-link {
   margin: 0 0 0 10px;

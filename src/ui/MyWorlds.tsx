@@ -33,6 +33,8 @@ import { TitleInput, when } from './worldParts';
 import { PRIVACY_URL, SOURCE_URL, TERMS_URL } from './links';
 import { APP_VERSION } from './version';
 import { HomeGlobe } from './studio/HomeGlobe';
+import { OldSiteBadge } from './Corners';
+import { OLD_SITE } from './oldSite';
 import './worlds.css';
 
 export interface MyWorldsProps {
@@ -79,7 +81,8 @@ export function MyWorlds({ phone, onOpen, onNew, onOpenText }: MyWorldsProps) {
   const trash = useTrashView();
   const n = list.length;
   const empty = n === 0;
-  // 没登录:世界只在这个浏览器里,清理浏览器数据就没了 —— 直说,后面跟「全部存成文件」;登录了存在账号里,不再提醒
+  // 没登录:世界只在这个浏览器里,清理浏览器数据就没了 —— 直说,后面跟「全部存成文件」;登录了存在账号里,不再提醒。
+  // 旧网站(oldSite.ts):这里的世界和最新版的各存各的,说清楚(顶上还有「旧版」标记)
   const sub = !keep
     ? '浏览器不让网页存数据，关掉页面前请把世界存成文件。'
     : session
@@ -92,11 +95,13 @@ export function MyWorlds({ phone, onOpen, onNew, onOpenText }: MyWorldsProps) {
         ? server
           ? '建好的世界存在这个浏览器里。登录以后，换电脑、换手机都能接着改。'
           : '建好的世界存在这个浏览器里；换电脑请用存档文件。'
-        : phone
-          ? `${n} 个世界只存在这个浏览器里，清理浏览器数据会删掉。`
-          : server
-            ? `${n} 个世界，只存在这个浏览器里，清理浏览器数据会一起删掉。登录以后存进账号，换电脑、换手机都能接着改。`
-            : `${n} 个世界，只存在这个浏览器里，清理浏览器数据会把它们一起删掉。`;
+        : OLD_SITE !== null
+          ? `${n} 个世界，存在旧版里，和最新版的分开放。`
+          : phone
+            ? `${n} 个世界只存在这个浏览器里，清理浏览器数据会删掉。`
+            : server
+              ? `${n} 个世界，只存在这个浏览器里，清理浏览器数据会一起删掉。登录以后存进账号，换电脑、换手机都能接着改。`
+              : `${n} 个世界，只存在这个浏览器里，清理浏览器数据会把它们一起删掉。`;
   // 正在看的世界存不进浏览器(存储满了)、一个都没存下时,也能把它存成文件
   const saveAll = (n > 0 || currentUnsaved()) && (
     <button className="mw-link" data-act="save-all" onClick={downloadAll}>
@@ -134,6 +139,7 @@ export function MyWorlds({ phone, onOpen, onNew, onOpenText }: MyWorldsProps) {
           </div>
         )}
         <div className="mw-heading">
+          <OldSiteBadge />
           <h1>我的世界</h1>
           <p>
             {sub}

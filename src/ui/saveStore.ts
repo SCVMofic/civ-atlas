@@ -22,13 +22,14 @@
  * - 删掉一个世界,AI 给它写的东西(ai/library.ts,按世界编号存)一起删。
  * - 旧版本生成器存的世界,第一次按新版重存时,把浏览器里原来那份原样另存一份(keepOriginal;同一个世界只留最早那份,
  *   以后不覆盖):重存会把存档里的生成器版本换成新的,留着这份才知道它原来是哪一版、长什么样。删除、撤销、复制跟着世界走;
- *   存储满了留不下就不留,不为它删别的世界,也不挡着新的存进去。
+ *   存储满了留不下就不留,不为它删别的世界,也不挡着新的存进去。打开旧版本的分享链接、旧网址(还没存着)以后改了才存进来的,
+ *   第一次存时把打开的那一份同样留着。「看原样」(ui/oldSite.ts)读的就是这一份(originalOf、currentOriginal)。
  * - 登录了网站账号的,世界还会同步进账号(account/sync.ts):这里给它原样读写一个世界(rawWorld / putSyncedWorld),
  *   用户删掉一个世界时告诉它(setDeleteHook);为了腾地方删掉的旧世界不算删除(账号里的还在)。
  */
 import { useSyncExternalStore } from 'react';
 import type { WorldParams } from '../gen/world';
-import type { WorldEdits } from '../gen/edits';
+import { GENERATOR_VERSION, type WorldEdits } from '../gen/edits';
 import {
   CHECK_WARNING,
   SHARE_BROKEN,
@@ -608,20 +609,22 @@ function keepOriginal(id: string, text: string | null) {
 /**
  * 写一个世界的存档(和本地信息);新存一个超过上限就删最旧的。
  * 本地信息没写进去也算没存成:没有"还在新建"那一条,没建完的世界下次打开会被当成建好的、锁住。
- * 新存的就把存档也拿掉;原来就有的留着原来那份本地信息
+ * 新存的就把存档也拿掉;原来就有的留着原来那份本地信息。
+ * first:第一次存进来的世界原来是哪一份(打开旧版本的分享链接、旧网址以后改了才存的):比这次存的版本旧就原样留着
  */
-function writeSave(id: string, save: SaveFile, meta?: Meta): boolean {
+function writeSave(id: string, save: SaveFile, meta?: Meta, first?: SaveFile | null): boolean {
   const kv = store();
   const fresh = kv.get(PREFIX + id) === null;
   evicted = [];
   const text = JSON.stringify(save);
-  const orig = fresh ? null : originalToKeep(id, save.generator);
+  const orig = !fresh ? originalToKeep(id, save.generator) : first && first.generator < save.generator ? JSON.stringify(first) : null;
   let ok = put(PREFIX + id, text, id);
-  if (ok) keepOriginal(id, orig);
   if (ok && meta && !writeMeta(id, meta)) {
     if (fresh) kv.remove(PREFIX + id);
     ok = false;
   }
+  // 存档和本地信息都写成了才留原样(留它占的地方不挤掉别的世界、不挡着本地信息)
+  if (ok) keepOriginal(id, orig);
   reportEvicted('quota');
   // 新存一个世界:超过上限就删最旧的
   if (ok && fresh) {
@@ -785,13 +788,16 @@ export function importSave(save: SaveFile): string | null {
   for (const w of listWorlds()) {
     if (w.draft || !sameSave(w.save, save)) continue;
     // 只差投影 / 中央经线:用文件里的(下次打开还是文件里的样子)
+    let ok = true;
     if (!sameView(w.save.view, save.view)) {
       const next: SaveFile = { ...w.save, savedAt: new Date().toISOString() };
       if (save.view) next.view = save.view;
       else delete next.view;
-      writeSave(w.id, next);
+      ok = writeSave(w.id, next);
       changed();
     }
+    // 存着的已经是更新的版本、还没留原样:文件这份就是它原来的样子(看原样);存档写成了以后再留
+    if (ok && save.generator < w.save.generator && originalOf(w.id) === null) keepOriginal(w.id, JSON.stringify(save));
     return w.id;
   }
   const id = newWorldId();
@@ -833,6 +839,8 @@ interface Current {
   wrote?: string | null;
   /** 底稿出处(从别人的分享短链接另存来的;存进存档) */
   origin?: SaveOrigin;
+  /** 打开时还没存着、来自旧版本的世界(分享链接、旧网址):原来那一份,第一次存进来时原样留着 */
+  original?: SaveFile;
 }
 
 let current: Current | null = null;
@@ -925,7 +933,7 @@ function saveCurrent(force = false): boolean {
   if (c.kind === 'visit') c.kind = 'created';
   const view = currentView();
   c.savedView = view;
-  const ok = writeSave(c.id, makeSave(c.params, edits, c.check, c.title, undefined, view, c.origin), metaOf(c));
+  const ok = writeSave(c.id, makeSave(c.params, edits, c.check, c.title, undefined, view, c.origin), metaOf(c), c.original);
   c.unsaved = !ok;
   if (ok) scheduleThumb(c.id, redraw);
   changed();
@@ -978,6 +986,8 @@ export interface AttachSpec {
   base?: DraftBase | null;
   /** 底稿出处(存着的世界、存档文件里带着的;打开别人的分享短链接时是那个链接)。新建中的没有 */
   origin?: SaveOrigin | null;
+  /** 还没存着、来自旧版本的世界(分享链接、旧网址、存不进浏览器的存档文件):原来那一份(看原样用,第一次存进来时原样留着) */
+  original?: SaveFile | null;
 }
 
 /**
@@ -999,6 +1009,7 @@ export function attachWorld(spec: AttachSpec) {
     saved: spec.saved,
     savedView: spec.view ?? prev?.view,
     origin: spec.kind === 'draft' ? undefined : (cleanOrigin(spec.origin) ?? undefined),
+    original: spec.kind === 'draft' || !spec.original || spec.original.generator >= GENERATOR_VERSION ? undefined : spec.original,
   };
   const keep = spec.kind === 'created' || (spec.kind === 'draft' && !spec.pristine);
   const same =
@@ -1327,4 +1338,26 @@ export function _resetForTest() {
   evicted = [];
   mem.clear();
   stopThumb();
+}
+
+/**
+ * 旧版本建的世界原来的样子(看原样用):留过底的是留的那份;没留过、存着的还是旧版本存的,就是存着的这份;
+ * 都不是 = null(新版建的、读不出来的)。给的是存档原文(存档格式、各项都是当时写的,旧网站按它自己的读法读),
+ * 只把生成器版本换成读出来的(老存档没写版本的)
+ */
+export function originalOf(id: string): SaveFile | null {
+  const kv = store();
+  for (const text of [kv.get(ORIG + id), kv.get(PREFIX + id)]) {
+    if (text === null) continue;
+    const r = parseSave(text);
+    if (r.ok && r.save.generator < GENERATOR_VERSION) return { ...(JSON.parse(text.replace(/^\uFEFF/, '')) as SaveFile), generator: r.save.generator };
+  }
+  return null;
+}
+
+/** 正在看的世界原来的样子(存着的按 originalOf;还没存着的是打开时带的那一份);不是旧版本的 = null */
+export function currentOriginal(): SaveFile | null {
+  const c = current;
+  if (!c) return null;
+  return originalOf(c.id) ?? c.original ?? null;
 }

@@ -140,6 +140,7 @@ import {
   attachWorld,
   briefError,
   briefWarning,
+  currentOriginal,
   currentWorld,
   deleteWorld,
   detachWorld,
@@ -206,7 +207,9 @@ import { useAiOn } from '../ai/client';
 import { Globe, getGlobeOn, setGlobeOn, useGlobeOn, type GlobeApi } from './Globe';
 import { setupAi } from '../ai/setup';
 import { ToastBar, clearToast, showToast } from './Toast';
-import { DRAFT_SEG, FirstHint, HoverCard, MapBar, MapControls, PhoneButtons, SEG_LAYERS, hintSeen, markHintSeen } from './Corners';
+import { DRAFT_SEG, FirstHint, HoverCard, MapBar, MapControls, OldSiteBadge, PhoneButtons, SEG_LAYERS, hintSeen, markHintSeen } from './Corners';
+import { OLD_SITE, OWN_KEY, oldSiteFor, oldSiteNote, openInLatest, openOriginal, plainSave } from './oldSite';
+import type { ToastAction } from './toastStore';
 import { Sidebar } from './Sidebar';
 import { PhoneSheet } from './PhoneSheet';
 import { useLayerThumbs } from './LayerPopover';
@@ -334,6 +337,26 @@ function draftTarget(params: WorldParams, base: DraftBase | null = null, edits: 
   return { id: newWorldId(), kind: 'draft', params, edits, pristine: true, base, title };
 }
 
+/**
+ * 读档提示条上的按钮:最新版里打开旧版本的世界 =「看原样」(到那一版的旧网站里看,新页面;没有那一版的旧网站就不放);
+ * 旧网站里打开更新的版本存的 =「到最新版打开」。orig:这个世界原来那一份
+ */
+function versionAction(orig: SaveFile | null): ToastAction | undefined {
+  if (!orig) return undefined;
+  if (OLD_SITE !== null) {
+    if (!(orig.generator > GENERATOR_VERSION)) return undefined;
+    return { label: '到最新版打开', act: 'open-latest', onClick: () => void openInLatest(orig).then((ok) => ok || openFailed()) };
+  }
+  const site = oldSiteFor(orig.generator);
+  if (!site) return undefined;
+  return { label: '看原样', act: 'see-original', onClick: () => void openOriginal(orig).then((ok) => ok || openFailed(site.href)) };
+}
+
+/** 交不过去(浏览器太旧,压缩不了存档):说一声怎么自己打开 */
+function openFailed(site?: string) {
+  notify({ kind: 'error', text: '这个浏览器打不开', more: [site ? `请把世界存成文件，到 ${site} 打开` : '请把世界存成文件，到最新版打开'] });
+}
+
 /** 存着的一个世界(刷新页面回到它时投影照网址,不换) */
 function storedTarget(w: StoredWorld, from: 'stored' | 'restore'): Target {
   return {
@@ -400,6 +423,7 @@ function writeWorldUrl(t: Target) {
   q.delete('w');
   q.delete('new');
   q.delete('s');
+  q.delete(OWN_KEY);
   // 分享短链接打开的、还没存进我的世界:码留在网址里(刷新再取一次)
   if (t.shareCode && t.kind === 'visit' && !isStored(t.id)) q.set('s', t.shareCode);
   // 存着的记录还是换参数之前的(新建中换了种子、参数,正在生成):先不指向它,存好了再换成 w=
@@ -599,7 +623,7 @@ export function App() {
   /** 分享短链接:正在取 / 停了 / 打不开(取到了 = null) */
   const [landing, setLanding] = useState<'loading' | 'gone' | { error: string } | null>(route.stage === 'home' && init.shortShare !== null && !init.share ? 'loading' : null);
   /** 打开别人分享的世界:地图下那条说明(这个世界的编号;点了"知道了"、改了存进我的世界以后不再显示) */
-  const [sharedFor, setSharedFor] = useState<{ id: string; short: boolean; by: string } | null>(null);
+  const [sharedFor, setSharedFor] = useState<{ id: string; short: boolean; by: string; own: boolean } | null>(null);
   const touchRef = useRef(() => {});
   touchRef.current = () => {
     if (getStage().stage !== 'world') return;
@@ -1048,8 +1072,13 @@ export function App() {
     // 分享链接:先把 # 那段从地址栏去掉(刷新不会重复导入),解开以后走读档流程;
     // 链接里的种子、参数和网址上的一样,所以照常先按网址生成,不用等
     if (init.share) {
-      history.replaceState(null, '', location.pathname + location.search);
-      decodeShare(init.share).then((r) => openShareRef.current(r));
+      // own=1:最新版和旧网站之间交过来的自己的世界(看原样、到最新版打开),不说成别人分享的;标记用过就从地址栏去掉
+      const q = new URLSearchParams(location.search);
+      const own = q.get(OWN_KEY) === '1';
+      q.delete(OWN_KEY);
+      const rest = `${q}`;
+      history.replaceState(null, '', location.pathname + (rest ? `?${rest}` : ''));
+      decodeShare(init.share).then((r) => openShareRef.current(r, undefined, own));
     }
     // 邀请链接(invite=):记下邀请码,弹出登录窗(已经登录了就算了)
     if (takeInviteFromUrl() && serverBase() && !getSession()) openLogin();
@@ -1275,7 +1304,9 @@ export function App() {
     const err = shareErr.current;
     shareErr.current = null;
     if (err) showToast({ id: 'share', kind: 'error', text: '打不开这个分享链接', more: [err] });
-    const say = (n: Parameters<typeof notify>[0]) => n && notify({ ...n, more: n.more?.map(briefWarning) });
+    /** 提示条上的「看原样」/「到最新版打开」(世界变了样才有,见下面) */
+    let act: ToastAction | undefined;
+    const say = (n: Parameters<typeof notify>[0]) => n && notify({ ...n, more: n.more?.map((w) => briefWarning(oldSiteNote(w))), action: n.action ?? act });
     const check = worldCheck(world);
     // 投影和中央经线跟着世界存:换成存档里的(旧存档没有 = 等距圆柱、0°)
     if (t.view !== undefined) applyView(t.view ?? undefined);
@@ -1289,21 +1320,25 @@ export function App() {
     resetMarkUi();
     resetCharacterUi();
     setEdits(edits);
-    attachWorld({ id: t.id, params: world.params, check, kind: t.kind, title: t.title, saved: t.saved ?? edits, view: t.view ?? undefined, pristine: t.pristine, base: t.base, origin: t.origin });
+    // 还没存着的旧版本世界(分享链接、旧网址、存不进浏览器的文件):原来那一份跟着(看原样;改了存进来时原样留着)
+    const original = t.from === 'url' ? (t.gen !== undefined ? plainSave(world.params, t.gen) : null) : t.from === 'link' || t.from === 'file' ? (t.save ?? null) : null;
+    attachWorld({ id: t.id, params: world.params, check, kind: t.kind, title: t.title, saved: t.saved ?? edits, view: t.view ?? undefined, pristine: t.pristine, base: t.base, origin: t.origin, original });
     if (t.kind !== 'draft') setWorldStats(aliveAtEnd(rc));
     const save = t.save;
     // 带种子的网址(别人发的普通链接):是旧版本画的就说清现在变了什么
     if (t.from === 'url') {
       const note = t.gen !== undefined ? versionNote(t.gen, false) : null;
+      act = versionAction(t.gen !== undefined ? plainSave(world.params, t.gen) : null);
       if (note) say({ kind: 'warn', text: `已打开「种子 ${world.params.seed}」`, more: [note] });
       return;
     }
     if (!save || !t.from) return;
     const more: string[] = [...(t.warnings ?? [])];
-    if (t.from === 'stored' || t.from === 'restore') {
-      const note = versionNote(save.generator, (save.edits.terrain?.length ?? 0) > 0 || !!save.edits.sketch);
-      if (note) more.push(note);
-    }
+    const note = versionNote(save.generator, (save.edits.terrain?.length ?? 0) > 0 || !!save.edits.sketch);
+    // 从文件、分享链接打开的,这句已经在读档的警告里
+    if (note && (t.from === 'stored' || t.from === 'restore')) more.push(note);
+    // 世界变了样(有"来自旧版本"这一句)才放「看原样」;旧网站里来自更新版本的放「到最新版打开」
+    if (note && more.includes(note)) act = versionAction(OLD_SITE !== null ? save : currentOriginal());
     // 地形校验只在"生成时带的地形修改就是存档里的"时才核对
     const cw = sameT ? checkWarning(save, check) : null;
     if (cw) more.push(cw);
@@ -1452,9 +1487,10 @@ export function App() {
   };
   /**
    * 打开分享链接(解开以后):别人的世界,先不存;改了(或起了名)才存进"我的世界"。
-   * 短链接(short):改了另存时写明底稿出处(署名、这时的世界名、这个链接);长链接里没有分享人,不写
+   * 短链接(short):改了另存时写明底稿出处(署名、这时的世界名、这个链接);长链接里没有分享人,不写。
+   * own:最新版和旧网站之间交过来的自己的世界:最新版里不出"别人分享给你的世界"那条说明(旧网站上那条换成旧网站的说法,照常出)
    */
-  const openShare = (r: ParseResult, short?: { code: string; by?: string }) => {
+  const openShare = (r: ParseResult, short?: { code: string; by?: string }, own = false) => {
     if (!r.ok) {
       const msg = briefError(r.error);
       // 世界还在生成:等生成完再说(生成时提示条上是进度)
@@ -1465,7 +1501,7 @@ export function App() {
     const sv = r.save;
     const id = newWorldId();
     const by = short ? cleanSignature(short.by) : '';
-    setSharedFor({ id, short: !!short, by });
+    setSharedFor(own && OLD_SITE === null ? null : { id, short: !!short, by, own });
     const origin: SaveOrigin | null = short ? { ...(by ? { by } : {}), title: sv.title ?? '', url: shortLink(short.code) } : null;
     openTarget({ id, kind: 'visit', params: sv.params, edits: sv.edits, saved: sv.edits, title: sv.title, view: sv.view ?? null, from: 'link', save: sv, warnings: r.warnings, shareCode: short?.code, origin });
   };
@@ -3477,7 +3513,7 @@ export function App() {
         )
       ) : narrow ? (
         <>
-          {/* 手机:底部的世界卡片(没选东西时;选中了东西换成详情卡片)、右上竖排的毛玻璃按钮(图层、地球);数据图层的图例在左上。
+          {/* 手机:底部的世界卡片(没选东西时;选中了东西换成详情卡片)、右上竖排的毛玻璃按钮(图层、地球);数据图层的图例、旧网站的「旧版」标记在左上。
               界面都在卡片和毛玻璃按钮上,地图上不再压字、不用渐变遮罩;最近大事在世界卡片拉到顶时的列表里。
               新建时这些都不放(新建界面自己一套) */}
           {!draft && !selState.sel && !upOn && (
@@ -3494,15 +3530,16 @@ export function App() {
               />
           )}
           {!draft && <PhoneButtons layers={{ ...layerProps, draft }} globeOn={globeOn} onToggleGlobe={toggleGlobe} marking={markable ? markPlacing : undefined} />}
-          {!draft && style === 'data' && (
+          {!draft && (OLD_SITE !== null || style === 'data') && (
             <div className="corner-tl">
-              <Legend layer={layer} />
+              <OldSiteBadge />
+              {style === 'data' && <Legend layer={layer} />}
             </div>
           )}
         </>
       ) : (
         <>
-          {/* 宽屏:左边侧栏(世界 / 选中的东西的详情、搜索、存档);右上图层、导出、编年史;数据图层的图例在地图左上。新建时都不放(新建界面自己一套) */}
+          {/* 宽屏:左边侧栏(世界 / 选中的东西的详情、搜索、存档);右上图层、导出、编年史;数据图层的图例、旧网站的「旧版」标记在地图左上。新建时都不放(新建界面自己一套) */}
           {!draft && (
             <Sidebar
               data={data}
@@ -3517,9 +3554,10 @@ export function App() {
             />
           )}
           {!draft && <MapBar civ={civ} layers={layerProps} exp={{ data, civ, plain: plainCiv, style, layer }} draft={draft} />}
-          {!draft && style === 'data' && !terrainTool.on && (
+          {!draft && (OLD_SITE !== null || (style === 'data' && !terrainTool.on)) && (
             <div className="corner-tl">
-              <Legend layer={layer} />
+              <OldSiteBadge />
+              {style === 'data' && !terrainTool.on && <Legend layer={layer} />}
             </div>
           )}
         </>
@@ -3535,7 +3573,7 @@ export function App() {
       <ToastBar />
       {/* 右下(时间轴上方):地球 / 平面、放大、缩小。触屏不放 + −(用双指捏合);窄屏整个不放(地球在右上竖排的按钮里) */}
       <MapControls globeOn={globeOn} onToggleGlobe={toggleGlobe} onZoom={zoomButton} shifted={false} hidden={!data || narrow || home || draft} zoom={!coarse} marking={markable ? markPlacing : undefined} />
-      {sharedOn ? <SharedHint phone={narrow} short={sharedFor.short} by={sharedFor.by} onOk={() => setSharedFor(null)} /> : <FirstHint show={hintOn && !!data && world && !terrainTool.on && !upOn} touch={coarse} />}
+      {sharedOn ? <SharedHint phone={narrow} short={sharedFor.short} by={sharedFor.by} own={sharedFor.own} onOk={() => setSharedFor(null)} /> : <FirstHint show={hintOn && !!data && world && !terrainTool.on && !upOn} touch={coarse} />}
       {world && !narrow && <UpheavalHint />}
       {/* 底部:时间轴(宽屏是卡片右边那一块底下的胶囊;手机是浮在底部卡片上面的胶囊);新建时还没有历史,不放 */}
       <div className="bottom-row">
