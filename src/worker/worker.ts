@@ -24,6 +24,7 @@ import { finishGully, rasterizeDeferred, type Raster } from '../gen/raster';
 import { GullyPool } from '../gullyPool';
 import { buildHistoryFrames } from '../gen/history';
 import { DEFAULT_CIV_PARAMS, generateCiv, civTransferables, planetTempo, type Civ, type Regions } from '../gen/civ';
+import { simulation } from '../simulation/simulation';
 import type { Intervention, TerrainOp, Upheaval } from '../gen/edits';
 import { sketchGrid, type SketchEdit } from '../gen/sketch';
 import { mergeUpheavals, previewUpheaval, type UpheavalStep } from '../gen/civ/upheaval';
@@ -274,7 +275,7 @@ async function handle(m: WorkerRequest): Promise<void> {
     const t0 = performance.now();
     const world = worldOf(m.params, m.terrain, m.sketch);
     const steps = stepsOf(m.params, m.terrain, m.sketch, m.upheavals);
-    const civ = generateCiv(world, { interventions: m.interventions, tempo: tempoOf(m.params, m.terrain, m.sketch), ...upOpt(steps) });
+    const civ = simulation.run({ world, params: { interventions: m.interventions, tempo: tempoOf(m.params, m.terrain, m.sketch), ...upOpt(steps) } });
     const ms = performance.now() - t0;
     const tempo = noteOf(m.params, m.sketch);
     if (m.type === 'resim') {
