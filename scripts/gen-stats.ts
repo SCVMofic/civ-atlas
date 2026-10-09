@@ -9,7 +9,7 @@
  */
 import { generateWorld, type World, type WorldParams } from '../src/gen/world';
 import { BIOMES, Biome } from '../src/gen/biomes';
-import { generateCiv } from '../src/gen/civ';
+import { simulation } from '../src/simulation/simulation';
 import { geometryOf } from '../src/gen/geometry';
 import { warStats } from '../src/gen/civ/wars';
 import { politicsStats } from '../src/gen/civ/politics';
@@ -119,7 +119,7 @@ shapeStats();
 
 // 文明:3000 年里的国家与战争
 const t2 = performance.now();
-const civ = generateCiv(w);
+const civ = simulation.run({ world: w });
 const s = warStats(civ);
 const ps = politicsStats(civ);
 const ds = dynastyStats(civ);
