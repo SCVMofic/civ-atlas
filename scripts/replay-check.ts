@@ -4705,6 +4705,10 @@ for (const style of ['realistic', 'fantasy']) {
   let doneToast = '';
   let undoToast = '';
   let tgtText = '';
+  /** 点名牌走的是哪条路:element = 按元素定位命中;fallback = 没命中、退回按坐标点 */
+  let tgtPath: '' | 'element' | 'fallback' = '';
+  /** 元素定位用的选择器(走兜底时打进错误里,便于查) */
+  let tgtSel = '';
   let allied = false;
   const triedPol = new Set<number>();
   for (let attempt = 0; attempt < 6 && !allied; attempt++) {
@@ -4750,12 +4754,14 @@ for (const style of ['realistic', 'fantasy']) {
       tgtText = tgt.text;
       const prev = await mp.evaluate(() => (window as any).__wfResim?.seq ?? 0);
       // 按元素点(等名牌可见 / 稳定 / 可点),不按坐标点:名牌是绝对定位 + 有进场动画,
-      // 坐标点走的是合成触摸,卡片拉满时容易被别的手势吃掉(偶发"点了没反应"、整段干预检查白跑)
-      const plateSel = `.tp-layer .tp-plate[data-kind="` + '${tgt.kind}' + `"][data-id="` + '${tgt.id}' + `"]`;
-      await mp
-        .locator(plateSel)
-        .click({ timeout: 5000 })
-        .catch(() => mp.touchscreen.tap(tgt.x, tgt.y)); // 兜底:名牌没找着就还按坐标点
+      // 坐标点走的是合成触摸,卡片拉满时容易被别的手势吃掉(偶发"点了没反应"、整段干预检查白跑)。
+      // 走没走兜底要记下来:兜底只是别让整段白跑,不能把"元素定位一直失败"盖过去(下面会报出来)
+      const plateSel = `.tp-layer .tp-plate[data-kind="${tgt.kind}"][data-id="${tgt.id}"]`;
+      tgtSel = plateSel;
+      const plate = mp.locator(plateSel);
+      const ready = await plate.waitFor({ state: 'visible', timeout: 5000 }).then(() => true, () => false);
+      tgtPath = ready && (await plate.click({ timeout: 5000 }).then(() => true, () => false)) ? 'element' : 'fallback';
+      if (tgtPath === 'fallback') await mp.touchscreen.tap(tgt.x, tgt.y);
       await mp.waitForFunction((s) => ((window as any).__wfResim?.seq ?? 0) > s, prev, { timeout: 20000 }).catch(() => null);
       await mp.waitForTimeout(300);
       doneToast = await mToast('resim-done');
@@ -4839,6 +4845,7 @@ for (const style of ['realistic', 'fantasy']) {
       `捏合 k ${k0.toFixed(2)} → ${k1.toFixed(2)}(中点下 ${mid0?.map((v: number) => v.toFixed(0))} → ${mid1?.map((v: number) => v.toFixed(0))});单指拖动 ${panned};点两下回正 k ${kReset.toFixed(2)};` +
       `点「${pol?.text}」→ 详情卡片 ${JSON.stringify(sheet0)}、胶囊 ${JSON.stringify(row1)}、国都圆环 ${JSON.stringify(ring)}、悬停卡片 ${hover};上拖 → 拉到顶 ${full} ${JSON.stringify(sheet1)}、胶囊藏起 ${fullCapsuleHidden};` +
       `干预页 ${cmds} 条;结盟提示「${pickToast}」、卡片藏起 ${hiddenWhilePicking};点「${tgtText}」→「${doneToast}」;撤销 →「${undoToast}」;` +
+      `点名牌走的哪条路:${tgtPath}${tgtPath === 'fallback' ? `(兜底,选择器 ${tgtSel})` : ''};` +
       `图层抽屉 ${JSON.stringify(lp)} → 实景 ${dark}、收起 ${lpClosed};概览「${ovRowText}」→ 收起 ${ovClosed};搜索框 ${JSON.stringify(sb)} 拉到顶 ${searchFull} → 「${hitName}」;` +
       `拉到顶 ${homeFull} 点我的世界 → ${JSON.stringify(homeBox)}、${homeCards} 个世界;新建 → 卡片 ${JSON.stringify(nwBox)};改地形 → 工具 ${nwTools};完成 → 退回 ${nwBack}`,
   );
@@ -4871,6 +4878,7 @@ for (const style of ['realistic', 'fantasy']) {
     if (!/^选择与.+结盟的国家 \d+ 年起生效 取消$/.test(pickToast) || !hiddenWhilePicking) errs.push(`手机:选目标的提示条 / 卡片收起不对(${pickToast})`);
     if (!/^.+与.+结盟,已从 \d+ 年起重新推演( \d+ 年时它叫.+)? 撤销$/.test(doneToast)) errs.push(`手机:点名牌后没有生效(${doneToast})`);
     if (!/^已撤销/.test(undoToast)) errs.push(`手机:撤销后没有"已撤销"(${undoToast})`);
+    if (tgtPath !== 'element') errs.push(`手机:点名牌没有命中元素(走了${tgtPath || '没点'}这条兜底;选择器 ${tgtSel})`);
   }
   if (!lp || Math.abs(lp.y + lp.height - VH) > 1 || lp.width !== VW) errs.push(`手机:图层弹层不是底部抽屉(${JSON.stringify(lp)})`);
   if (dark !== 'dark' || !lpClosed) errs.push(`手机:图层抽屉里切到实景不对(${dark})`);
