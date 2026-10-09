@@ -871,7 +871,7 @@ export function TerrainOverlay({
   if (importing)
     return (
       <svg className="terrain-overlay" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-hidden="true">
-        <g id={uid}>
+        <g id={uid} className="terrain-marks">
           <ImportLayer width={width} height={height} scale={scale} rest={edits.sketch?.rest ?? 'auto'} />
         </g>
         {!!wrap && [-wrap, wrap, 2 * wrap].map((dx) => <use key={dx} href={`#${uid}`} x={dx} />)}
@@ -909,7 +909,7 @@ export function TerrainOverlay({
         </pattern>
         {layer.masks}
       </defs>
-      <g id={uid}>
+      <g id={uid} className="terrain-marks">
         {layer.body}
         {opMarks}
         {draftMark}
