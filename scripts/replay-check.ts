@@ -1416,11 +1416,11 @@ for (const style of ['realistic', 'fantasy']) {
       .then((h) => h.jsonValue() as Promise<string>, () => '');
   // 宽屏左边被侧栏卡片挡住一截,只露出大半个世界:先算出 2640 年以后第一件大事的事发地,打开后把地图挪过去(播放经过它时标签才在地图里)
   const { DEFAULT_PARAMS: DP, generateWorld: genW } = await import('../src/gen/world');
-  const { generateCiv: genC } = await import('../src/gen/civ');
+  const { simulation: simC } = await import('../src/simulation/simulation');
   const { buildChronicle: buildC, filterChronicle: filterC } = await import('../src/gen/civ/chronicle');
   const { entryAnchor } = await import('../src/ui/timelineLayout');
   const wT = genW({ ...DP, seed: 7 });
-  const cT = genC(wT);
+  const cT = simC.run({ world: wT });
   const evNext = filterC(buildC(cT), { major: true }).find((e) => e.year >= 2640 && entryAnchor(wT, cT, e));
   const evAt = evNext ? entryAnchor(wT, cT, evNext) : null;
   await page.goto(`${dev.url}/?seed=7&style=fantasy&play=1`);
@@ -2266,10 +2266,10 @@ for (const style of ['realistic', 'fantasy']) {
   let seatAt: (r: number) => [number, number] = () => [NaN, NaN];
   {
     const { DEFAULT_PARAMS, generateWorld } = await import('../src/gen/world');
-    const { generateCiv } = await import('../src/gen/civ');
+    const { simulation } = await import('../src/simulation/simulation');
     const { ownersAt } = await import('../src/gen/civ/timeline');
     const w7 = generateWorld({ ...DEFAULT_PARAMS, seed: 7 });
-    const c7 = generateCiv(w7);
+    const c7 = simulation.run({ world: w7 });
     seatAt = (r) => {
       const R = c7.regions;
       let far = R.seat[r];
