@@ -107,6 +107,7 @@ import {
   type WorldEdits,
 } from '../gen/edits';
 import { sameTerrain, sameUpheavals } from '../gen/terrainEdits';
+import { sameMix, type NameMix } from '../gen/names/mix';
 import type { RasterPatch } from '../gen/rasterPatch';
 import { baseRegions, civAtEra, dropComposed, eraData, eraIndex, eraMapsOf, eraReady, eraShown, patchKey, reuseRegions, useEraIndex, withHistory, type EraMaps } from './eras';
 import { sameSketch, type SketchEdit } from '../gen/sketch';
@@ -462,6 +463,8 @@ const MAP_KEEP = 2;
 
 /** 请求里带的地形大事(没有 = 不带) */
 const upsOpt = (u: readonly Upheaval[] | undefined) => (u?.length ? { upheavals: [...u] } : {});
+/** 推文明时带的地名风格(自动 = 不带) */
+const namesOpt = (names: NameMix | undefined) => (names ? { names } : {});
 
 /** 结束那一年现存几国(我的世界的卡片上写;没长出文明 = 0) */
 function aliveAtEnd(civ: Civ): number {
@@ -660,6 +663,8 @@ export function App() {
    */
   const civUps = useRef<readonly Upheaval[] | undefined>(undefined);
   const genUps = useRef<readonly Upheaval[] | undefined>(undefined);
+  /** 最近一次请求的文明是按哪种地名风格起名的(自动 = undefined) */
+  const civNames = useRef<NameMix | undefined>(undefined);
   const rawUps = useRef<readonly Upheaval[] | undefined>(undefined);
   /** 读档 / 自动恢复套上的地形大事(按它重推完不提示) */
   const restoredUps = useRef<readonly Upheaval[] | undefined | null>(null);
@@ -854,7 +859,7 @@ export function App() {
               reject(e);
             },
           });
-          send({ type: 'trial', id: reqId.current, tid, params: p, terrain: [...genTerrain.current], sketch: genSketch.current, interventions: [...interventions], ...upsOpt(ups) });
+          send({ type: 'trial', id: reqId.current, tid, params: p, terrain: [...genTerrain.current], sketch: genSketch.current, interventions: [...interventions], ...upsOpt(ups), ...namesOpt(civNames.current) });
         }),
     );
     return () => setTrialRunner(null);
@@ -929,7 +934,7 @@ export function App() {
   const applyResim = (next: Civ, workerMs: number, eras: EraWorld[] | undefined, baseKey: string) => {
     const old = rawRef.current;
     const sameUps = sameUpheavals(civUps.current, rawUps.current);
-    const civ: Civ = old ? reuseRegions(old, next, sameUps) : next;
+    const civ: Civ = old ? reuseRegions(old, next, sameUps, true) : next;
     rawUps.current = civUps.current;
     // 地形大事以后各段的世界:和现在一样(只改了干预)就不换,地图不用重画
     const base = baseRef.current;
@@ -1047,7 +1052,9 @@ export function App() {
       setShownSketch(t.edits.sketch);
       setTerrainTool({ on: false });
       closeUpheaval();
-      send({ type: 'generate', id, params: p, scale: 1, terrain: [...terrain], sketch: t.edits.sketch });
+      // 地名风格也直接带着(只管起名,和改名、干预不同:生成完不用再重推一遍)
+      civNames.current = t.edits.nameMix;
+      send({ type: 'generate', id, params: p, scale: 1, terrain: [...terrain], sketch: t.edits.sketch, ...namesOpt(t.edits.nameMix) });
       // 换世界:改名、干预、选中都属于旧世界,一起作废(先停掉旧世界的自动存,清空不算"改回默认";新世界先按"没有干预、没有地形大事"生成)
       detachWorld();
       civEdits.current = EMPTY_EDITS.interventions;
@@ -1115,6 +1122,7 @@ export function App() {
     genSketch.current = sk;
     civEdits.current = interventions;
     civUps.current = genUps.current = ups;
+    civNames.current = getEdits().nameMix;
     resimSeq.current++;
     resimInfo.current = null;
     setResim(null);
@@ -1130,14 +1138,17 @@ export function App() {
     clearChroniclePick();
     if (getChronicle().polity !== null) setChronicle({ polity: null });
     if (getPeople().polity !== null) setPeople({ polity: null });
-    send({ type: 'generate', id, params: genParams.current, scale: 1, terrain: [...t], sketch: sk, interventions: [...interventions], ...upsOpt(ups) });
+    send({ type: 'generate', id, params: genParams.current, scale: 1, terrain: [...t], sketch: sk, interventions: [...interventions], ...upsOpt(ups), ...namesOpt(civNames.current) });
   }, [edits.terrain, edits.sketch, baseData, send]);
 
   // ---- 干预(阶段 4)、地形大事:干预列表或地形大事一变,就在后台带着新的重推文明(地形不动;变了的那一年以前和原来一样) ----
   useEffect(() => {
     const list = edits.interventions;
     const ups = edits.upheavals;
-    if (!baseData || !genParams.current || (sameInterventions(list, civEdits.current) && sameUpheavals(ups, civUps.current))) return;
+    const names = edits.nameMix;
+    // 地名风格:生成新世界时已经带着(修改先清空、生成完再套上,这期间不算变了);新建时换了风格,只重推、重新起名
+    const sameNames = fresh.current || sameMix(names, civNames.current);
+    if (!baseData || !genParams.current || (sameInterventions(list, civEdits.current) && sameUpheavals(ups, civUps.current) && sameNames)) return;
     if (!sameTerrain(getEdits().terrain, genTerrain.current) || !sameSketch(getEdits().sketch, genSketch.current)) return; // 等改地形那次生成一起推
     // 从哪一年起变:新加的 / 删掉的干预、地形大事里最早的那一年(重推完时间轴停在这里)
     const before = civEdits.current;
@@ -1150,11 +1161,14 @@ export function App() {
     const upChanged = [...upNow.filter((_, i) => !ub.includes(ua[i])), ...upBefore.filter((_, i) => !ua.includes(ub[i]))];
     const years = [...(changed.length || upChanged.length ? changed : list).map((v) => Math.floor(v.from)), ...upChanged.map((u) => u.year)].filter((y) => Number.isFinite(y));
     const year = years.length ? Math.max(0, Math.min(...years)) : 0;
+    // 只换了地名风格:历史不变,不提示、不跳时间
+    const namesOnly = !changed.length && !upChanged.length && sameInterventions(list, before) && sameUpheavals(ups, civUps.current);
     civEdits.current = list;
     civUps.current = ups;
+    if (!fresh.current) civNames.current = names;
     const seq = ++resimSeq.current;
     // 只多了一条 = 新下的干预 / 新加的大事;只少了一条 = 撤销(读档、自动恢复套上的不算,不提示)
-    const quiet = list === restoredIv.current && ups === restoredUps.current;
+    const quiet = namesOnly || (list === restoredIv.current && ups === restoredUps.current);
     const one = changed.length + upChanged.length === 1;
     const added = !quiet && one && list.length === before.length + 1 ? changed[0] : undefined;
     const removed = !quiet && one && list.length === before.length - 1 ? changed[0] : undefined;
@@ -1172,9 +1186,10 @@ export function App() {
       sketch: genSketch.current,
       interventions: list,
       ...upsOpt(ups),
+      ...namesOpt(civNames.current),
       have: [...eraPatches.current.keys()],
     });
-  }, [edits.interventions, edits.upheavals, baseData, send]);
+  }, [edits.interventions, edits.upheavals, edits.nameMix, baseData, send]);
   // 重推的文明画到地图上以后,记下"从下命令到地图更新"用了多久(冒烟检查用)
   useEffect(() => {
     const info = resimInfo.current;
@@ -1547,8 +1562,11 @@ export function App() {
     // 没画草图 = 整颗星球都换了,放的那几处是照原来的地形放的,不带过去。助手的对话(说的是原来那颗)也清掉
     newConversation();
     const sketch = st.edits.sketch;
-    const plain = !st.title && !sketch && worldKey({ ...t.params, seed: 0 }) === worldKey({ ...DEFAULT_PARAMS, seed: 0 });
-    const edits = sketch ? { ...EMPTY_EDITS, sketch, terrain: st.edits.terrain } : EMPTY_EDITS;
+    const plain = !st.title && !sketch && !st.edits.nameMix && worldKey({ ...t.params, seed: 0 }) === worldKey({ ...DEFAULT_PARAMS, seed: 0 });
+    // 地名风格和参数一样是这一类星球的设定,换一颗照旧
+    const nameMix = st.edits.nameMix;
+    const kept: WorldEdits = sketch ? { ...EMPTY_EDITS, sketch, terrain: st.edits.terrain } : EMPTY_EDITS;
+    const edits = nameMix ? { ...kept, nameMix } : kept;
     generate({ ...t, params: { ...t.params, seed }, edits, saved: undefined, title: st.title, pristine: st.pristine || plain, view: undefined, from: undefined, save: undefined });
   };
   /** 新建中调参数:改过的地形留着(按新参数重新生成) */

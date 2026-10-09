@@ -12,6 +12,7 @@ const PATHS = {
     </>
   ),
   plus: <path d="M12 5v14M5 12h14" />,
+  minus: <path d="M5 12h14" />,
   save: <path d="M6 4h12v16l-6-4-6 4z" />,
   export: <path d="M12 4v11M7 9l5-5 5 5M5 15v4h14v-4" />,
   book: <path d="M4 5h6a2 2 0 0 1 2 2v12a2 2 0 0 0-2-2H4zM20 5h-6a2 2 0 0 0-2 2v12a2 2 0 0 1 2-2h6z" />,

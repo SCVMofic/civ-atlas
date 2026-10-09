@@ -1170,7 +1170,7 @@ await page.waitForFunction(() => (window as any).__wf?.ready, null, { timeout: 6
 }
 
 // 第一次来(什么都没存):先到「我的世界」,中间一颗星球、一段话、「新建世界」;点了进新建界面;
-// 「创建世界」先弹确认框(列出种子、世界参数、地形三样不能再改),「再改改」关掉、「确认创建」才建好,回到平常的世界页面(浅色、政区)
+// 「创建世界」先弹确认框(列出种子、世界参数、地形、地名风格四样不能再改),「再改改」关掉、「确认创建」才建好,回到平常的世界页面(浅色、政区)
 {
   const fctx = await browser.newContext({ viewport: { width: 1400, height: 820 } });
   const fp = await fctx.newPage();
@@ -1200,7 +1200,7 @@ await page.waitForFunction(() => (window as any).__wf?.ready, null, { timeout: 6
   if (!empty || !globe || !emptyText.includes('还没有世界') || !emptyText.includes('打造一颗独属于你的星球')) errs.push(`第一次来:我的世界空着时不是"星球 + 一段话 + 新建世界"(${emptyText})`);
   if (!emptyText.includes('无需登录') || !emptyText.includes('不主张任何权利')) errs.push(`第一次来:「或者打开存档文件」下面没有"无需登录……归你"那行小字(${emptyText})`);
   if (!/[?&]new=1/.test(draftUrl)) errs.push(`第一次来:点「新建世界」没进新建(${draftUrl})`);
-  if (!['不能再改', '种子', '世界参数', '地形'].every((w) => dlg.includes(w)) || !new RegExp(`[?&]seed=${dlgSeed}(&|$)`).test(draftUrl)) errs.push(`新建界面:确认框没列出不能再改的三样(${dlg},种子 ${dlgSeed})`);
+  if (!['不能再改', '种子', '世界参数', '地形', '地名风格'].every((w) => dlg.includes(w)) || !new RegExp(`[?&]seed=${dlgSeed}(&|$)`).test(draftUrl)) errs.push(`新建界面:确认框没列出不能再改的四样(${dlg},种子 ${dlgSeed})`);
   if (!closed || !stillDraft) errs.push('新建界面:确认框点「再改改」没有关掉、回到新建');
   if (!/[?&]w=w/.test(worldUrl) || theme !== 'light' || layer !== 'political') errs.push(`新建界面:确认创建后没回到平常的世界页面(${worldUrl},${theme},${layer})`);
   await fctx.close();

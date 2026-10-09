@@ -26,7 +26,7 @@ import type { World } from '../world';
 import { Biome } from '../biomes';
 import { MinHeap, hypot2, mulberry32, subSeed } from '../util';
 import { geometryOf, type Chart, type Geometry } from '../geometry';
-import { createNamer, NAME_STYLES, type GeneratedName, type Namer } from '../names';
+import { createNamer, NAME_STYLES, pickStyle, type GeneratedName, type NameMix, type Namer } from '../names';
 import type { Culture, Place, Regions } from './types';
 import { adjLengths, cellAreas, refCellArea, refSpacing } from './geo';
 import { keyed, round24 } from './rand';
@@ -36,6 +36,8 @@ export interface PlaceNaming {
   cultures?: Culture[];
   /** 各州的民族(-1 = 无人) */
   culture?: Int16Array;
+  /** 整个世界的地名风格(CivParams.names):没人住的地方也照它 */
+  names?: NameMix;
 }
 
 type Kind = Place['kind'];
@@ -413,10 +415,10 @@ function nameAll(ns: Namers): void {
   ns.pending.length = 0;
 }
 
-/** 世界种子挑一种语感(没有民族数据时整个世界都用它) */
-export function worldNameStyle(seed: number): string {
+/** 世界种子挑一种语感(没人住的地方、没有民族数据时用它);names = 整个世界的地名风格,按份数挑 */
+export function worldNameStyle(seed: number, names?: NameMix): string {
   const rng = mulberry32(subSeed(seed, 'civ-places-style'));
-  return NAME_STYLES[Math.floor(rng() * NAME_STYLES.length)].id;
+  return pickStyle(names, rng());
 }
 
 function makeNamers(seed: number, regions: Regions, naming: PlaceNaming): Namers {
@@ -427,7 +429,7 @@ function makeNamers(seed: number, regions: Regions, naming: PlaceNaming): Namers
     if (!nm) cache.set(style, (nm = createNamer(base, style)));
     return nm;
   };
-  const fallback = worldNameStyle(seed);
+  const fallback = worldNameStyle(seed, naming.names);
   const valid = new Set(NAME_STYLES.map((s) => s.id));
   const family = new Map(NAME_STYLES.map((s) => [s.id, s.family]));
   const { cultures, culture } = naming;

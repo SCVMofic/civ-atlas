@@ -14,6 +14,7 @@ import { WESTERN_STYLES, westernCandidate } from './western';
 import { EASTERN_STYLES, easternCandidate } from './eastern';
 import { latinBlocked, zhBlocked } from './filters';
 import { NAME_KINDS, ZH_LEN, type Candidate, type NameKind } from './spec';
+import type { NameMix } from './mix';
 
 export type { NameKind } from './spec';
 export { NAME_KINDS } from './spec';
@@ -58,6 +59,16 @@ export const NAME_STYLES: NameStyle[] = [
   ...WESTERN_STYLES.map((s) => ({ id: s.id, label: s.label, family: 'western' as const, desc: s.desc })),
   ...EASTERN_STYLES.map((s) => ({ id: s.id, label: s.label, family: 'eastern' as const, desc: s.desc })),
 ];
+
+// 地名风格(配比):类型、清理、按份数抽在 mix.ts(不引词库,主线程也用)
+export { MIX_SHARE_MAX, NAME_STYLE_META, cleanMix, pickStyle, sameMix, type NameMix, type NameStyleMeta } from './mix';
+
+/** 用得上的语感和份数(按 NAME_STYLES 的顺序;i = 在 NAME_STYLES 里的序号);自动 = 全部各一份 */
+export function mixStyles(mix: NameMix | undefined): { style: NameStyle; i: number; share: number }[] {
+  const all = NAME_STYLES.map((style, i) => ({ style, i, share: mix ? (mix[style.id] ?? 0) : 1 }));
+  const used = all.filter((x) => x.share > 0);
+  return used.length ? used : all.map((x) => ({ ...x, share: 1 }));
+}
 
 /** 最近几个同类名字里用过的词根不再用,避免一张图上"瓦伦西亚、瓦伦堡、瓦伦河"扎堆 */
 const RECENT_WINDOW = 12;
