@@ -3,14 +3,14 @@
  * 默认种子 7:挑一个东方国家(改朝换代过的优先)、一座西幻城、一条河,各打印释名、起名两份提示词。不联网。
  */
 import { DEFAULT_PARAMS, generateWorld } from '../src/gen/world';
-import { generateCiv } from '../src/gen/civ';
+import { simulation } from '../src/simulation/simulation';
 import { rasterize } from '../src/gen/raster';
 import { explainRequest, nameMaterial, styleGuide, suggestRequest, type NameTarget } from '../src/ai/prompts/names';
 import type { AiRequest } from '../src/ai/types';
 
 const seed = Number(process.argv[2] ?? 7);
 const world = generateWorld({ ...DEFAULT_PARAMS, seed });
-const civ = generateCiv(world);
+const civ = simulation.run({ world });
 const raster = rasterize(world, 1);
 
 const east = civ.polities
