@@ -6,8 +6,8 @@
  * 世界本身算得对不对由 determinism / save 那些测试守着。
  */
 import { describe, expect, it } from 'vitest';
-import { WorldComputeService, WORLD_CHANGED, type WorkerLike } from '../src/worker/client';
-import type { RequestInput, WorkerRequest, WorkerResponse } from '../src/worker/protocol';
+import { WorldComputeService, WORLD_CHANGED, isTaskCancellation, type WorkerLike } from '../src/worker/client';
+import type { AppError, RequestInput, WorkerRequest, WorkerResponse } from '../src/worker/protocol';
 
 /** Omit 在联合类型上要逐支拆开,不然联合会被压成一个对象 */
 type DistOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
@@ -18,14 +18,29 @@ type ReplyBody = DistOmit<WorkerResponse, 'requestId'>;
 class FakeWorker implements WorkerLike {
   sent: WorkerRequest[] = [];
   terminated = false;
+  /** 打开它,postMessage 就像 structured clone 失败那样同步抛 */
+  throwOnPost = false;
   onmessage: ((e: MessageEvent) => void) | null = null;
+  onerror: ((e: unknown) => void) | null = null;
+  onmessageerror: ((e: unknown) => void) | null = null;
 
   postMessage(message: unknown): void {
+    if (this.throwOnPost) throw new Error('发不出去');
     this.sent.push(message as WorkerRequest);
   }
 
   terminate(): void {
     this.terminated = true;
+  }
+
+  /** 线程里没接住的异常(线程级故障) */
+  crash(reason: string): void {
+    this.onerror?.(new Error(reason));
+  }
+
+  /** 回执过不了 structured clone */
+  crashMessage(reason: string): void {
+    this.onmessageerror?.(new Error(reason));
   }
 
   /** 最后一条请求 */
@@ -184,12 +199,12 @@ describe('计算服务 · 取消与换线程', () => {
     expect(svc.busy).toBe(1); // 旧线程那份不再算
   });
 
-  it('dispose:线程停掉,在跑的活一起失败', async () => {
+  it('dispose:线程停掉,在跑的活一起失败(是收尾,不是故障)', async () => {
     const { svc, created } = setup();
     const job = svc.generate({ ...generateInput });
     svc.dispose();
     expect(created[0].terminated).toBe(true);
-    await expect(job.result).rejects.toMatchObject({ code: 'worker:replaced' });
+    await expect(job.result).rejects.toMatchObject({ code: 'worker:disposed' });
   });
 
   it('已被换掉的线程发来的回执一律不理(不污染新一代)', () => {
@@ -202,6 +217,149 @@ describe('计算服务 · 取消与换线程', () => {
     expect(seen).toEqual([]);
     created[1].emit({ type: 'progress', requestId: created[1].last.requestId, id: 2, stage: 'x', pct: 0.5 });
     expect(seen.length).toBe(1);
+  });
+});
+
+describe('计算服务 · 线程故障(FINDING-001 / 003 / 004)', () => {
+  it('线程级 error:在跑的活全部按 worker:crashed 结束,忙碌归零,不留挂着的请求', async () => {
+    const { svc, errors, worker } = setup();
+    const a = svc.generate({ ...generateInput });
+    const b = svc.trial({ ...trialInput });
+    expect(svc.busy).toBe(2);
+    worker().crash('boom');
+    await expect(a.result).rejects.toMatchObject({ code: 'worker:crashed' });
+    await expect(b.result).rejects.toMatchObject({ code: 'worker:crashed' });
+    expect(svc.busy).toBe(0);
+    expect(a.state).toBe('failed');
+    expect(errors.map((e) => e.code)).toContain('worker:crashed');
+  });
+
+  it('messageerror(回执过不了序列化):同样不挂,按线程崩了处理', async () => {
+    const { svc, worker } = setup();
+    const a = svc.resimulate({ ...resimInput });
+    worker().crashMessage('读不出来');
+    await expect(a.result).rejects.toMatchObject({ code: 'worker:crashed' });
+    expect(svc.busy).toBe(0);
+  });
+
+  it('崩溃之后不自动重放:线程作废,下一条请求才另起一个', async () => {
+    const { svc, created, worker } = setup();
+    const a = svc.generate({ ...generateInput });
+    worker().crash('boom');
+    await expect(a.result).rejects.toMatchObject({ code: 'worker:crashed' });
+    expect(created.length).toBe(1); // 没有偷偷再起一个
+    expect(created[0].sent.length).toBe(1); // 也没有偷偷重发
+    const b = svc.generate({ ...generateInput, id: 2 });
+    expect(created.length).toBe(2);
+    const w2 = worker();
+    expect(w2.sent.length).toBe(1);
+    w2.reply(0, doneBody(2));
+    expect((await b.result).id).toBe(2);
+    expect(svc.busy).toBe(0);
+  });
+
+  it('postMessage 同步抛错:这条活失败、忙碌归零,线程留着给下一条用', async () => {
+    const { svc, errors, created, worker } = setup();
+    const a = svc.generate({ ...generateInput });
+    worker().throwOnPost = true;
+    const b = svc.resimulate({ ...resimInput });
+    await expect(b.result).rejects.toMatchObject({ code: 'worker:unavailable' });
+    expect(b.state).toBe('failed');
+    expect(errors.map((e) => e.code)).toContain('worker:unavailable');
+    expect(created[0].terminated).toBe(false); // 还没坏,别换
+    expect(svc.busy).toBe(1); // 只有 b 结束了,a 还在
+    worker().throwOnPost = false;
+    worker().reply(0, doneBody(1));
+    await expect(a.result).resolves.toBeTruthy();
+    expect(svc.busy).toBe(0);
+  });
+
+  it('线程起不来(createWorker 抛):不发异常,而是给一件当场失败的活', async () => {
+    const errors: { code: string }[] = [];
+    const svc = new WorldComputeService({
+      createWorker: () => {
+        throw new Error('起不来');
+      },
+      onError: (e) => errors.push(e),
+    });
+    let job: ReturnType<typeof svc.generate> | null = null;
+    expect(() => {
+      job = svc.generate({ ...generateInput });
+    }).not.toThrow();
+    await expect(job!.result).rejects.toMatchObject({ code: 'worker:unavailable' });
+    expect(svc.busy).toBe(0);
+    expect(errors.map((e) => e.code)).toEqual(['worker:unavailable']);
+  });
+
+  it('重复的终态回执:不会把忙碌计数扣成负的,也不会误判线程不忙', () => {
+    const { svc, worker } = setup();
+    svc.generate({ ...generateInput });
+    const w = worker();
+    w.reply(0, doneBody(1));
+    expect(svc.busy).toBe(0);
+    // 又回了一条同样的 done:无事发生
+    w.reply(0, doneBody(1));
+    expect(svc.busy).toBe(0);
+    // 这时再发 generate:按"不忙"处理,不换线程
+    const b = svc.generate({ ...generateInput, id: 2 });
+    expect(svc.busy).toBe(1);
+    expect(w.last.requestId).toBe(b.requestId);
+  });
+
+  it('认不出的 requestId 回执:不扰动在跑的活', async () => {
+    const seen: string[] = [];
+    const { svc, worker } = setup((m) => seen.push(m.requestId));
+    const a = svc.generate({ ...generateInput });
+    worker().emit({ type: 'done', requestId: 'r999', id: 1, world: {}, raster: {}, civ: {}, ms: 1, genMs: 1, baseKey: 'k' } as unknown as WorkerResponse);
+    expect(svc.busy).toBe(1); // a 还在
+    expect(seen).toContain('r999'); // 总入口还是能看到它(界面自己按 id 丢)
+    worker().reply(0, doneBody(1));
+    await expect(a.result).resolves.toBeTruthy();
+    expect(svc.busy).toBe(0);
+  });
+
+  it('一条活报错不影响另一条(不乱清别人的请求)', async () => {
+    const { svc, worker } = setup();
+    const a = svc.generate({ ...generateInput });
+    const b = svc.resimulate({ ...resimInput });
+    worker().reply(0, { type: 'error', id: 1, error: { name: 'Error', message: 'A 炸了' } });
+    await expect(a.result).rejects.toMatchObject({ code: 'worker:exception' });
+    expect(svc.busy).toBe(1); // b 还等着
+    worker().reply(1, { type: 'civ', id: 1, seq: 1, civ: {}, ms: 1, baseKey: 'k' } as unknown as ReplyBody);
+    await expect(b.result).resolves.toBeTruthy();
+    expect(svc.busy).toBe(0);
+  });
+
+  it('dispose 之后:晚到的回执和 error 都没有副作用,也不再起线程', async () => {
+    const seen: string[] = [];
+    const { svc, created, errors, worker } = setup((m) => seen.push(m.requestId));
+    const a = svc.generate({ ...generateInput });
+    const w = worker();
+    svc.dispose();
+    await expect(a.result).rejects.toMatchObject({ code: 'worker:disposed' });
+    const before = seen.length;
+    w.emit({ type: 'progress', requestId: 'r1', id: 1, stage: 'x', pct: 0.5 });
+    w.crash('崩了');
+    expect(seen.length).toBe(before);
+    expect(errors.length).toBe(0);
+    // 关掉之后发活:当场失败,不新起线程
+    const b = svc.generate({ ...generateInput, id: 2 });
+    await expect(b.result).rejects.toMatchObject({ code: 'worker:unavailable' });
+    expect(created.length).toBe(1);
+  });
+
+  it('isTaskCancellation:换线程 / 关服务 / 主动取消算收尾,其余算故障', async () => {
+    const { svc } = setup();
+    const a = svc.generate({ ...generateInput });
+    svc.restart('世界换了');
+    const e1 = (await a.result.catch((e: unknown) => e)) as AppError;
+    expect(isTaskCancellation(e1)).toBe(true);
+    const b = svc.generate({ ...generateInput, id: 2 });
+    svc.cancel(b.requestId);
+    const e2 = (await b.result.catch((e: unknown) => e)) as AppError;
+    expect(isTaskCancellation(e2)).toBe(true);
+    expect(isTaskCancellation({ code: 'worker:crashed', message: '', recoverable: true })).toBe(false);
+    expect(isTaskCancellation({ code: 'worker:exception', message: '', recoverable: true })).toBe(false);
   });
 });
 
