@@ -4710,14 +4710,27 @@ for (const style of ['realistic', 'fantasy']) {
   /** 元素定位用的选择器(走兜底时打进错误里,便于查) */
   let tgtSel = '';
   let allied = false;
+  /** 第一次「真的选中了一国」的那次才量卡片 / 胶囊 / 国都圆环(没点中的那几次不算) */
+  let firstPick = true;
   const triedPol = new Set<number>();
   for (let attempt = 0; attempt < 6 && !allied; attempt++) {
     const cand = (await pickPolities(triedPol))[0];
     if (!cand) break;
     triedPol.add(cand.id);
     await mp.touchscreen.tap(cand.x, cand.y);
-    await mp.waitForTimeout(1100);
-    if (attempt === 0) {
+    // 这一下有没有点中,以「国家面板真的出来了」为准(等一个明确的状态,不用固定等待):
+    // 合成触摸偶尔会被别的手势吃掉,没出来就换一个国家再试 —— 别让挑选本身决定后面跑不跑得到
+    const opened = await mp
+      .locator('.inspector [data-act=intervene]')
+      .waitFor({ state: 'visible', timeout: 4000 })
+      .then(() => true, () => false);
+    if (!opened) {
+      await mp.locator('.inspector .cp-x').click().catch(() => {});
+      await mp.waitForTimeout(300);
+      continue;
+    }
+    if (firstPick) {
+      firstPick = false;
       hover = await mp.locator('.hover-card').count();
       sheet0 = await box('.inspector.sheet');
       row1 = await box('.bottom-row');
