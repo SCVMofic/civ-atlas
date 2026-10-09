@@ -48,7 +48,7 @@ import { renderLayer, type LayerId } from '../render/layers';
 import { Legend } from './Legend';
 import type { EraWorld, WorkerResponse } from '../worker/protocol';
 import type { AppError } from '../worker/protocol';
-import { WorldComputeService } from '../worker/client';
+import { WorldComputeService, isTaskCancellation } from '../worker/client';
 import {
   getWorldSession,
   invalidateSimulation,
@@ -56,8 +56,10 @@ import {
   sessionFailed,
   setSessionParams,
   setShownEdits,
+  beginWorldTask,
+  endWorldTask,
+  nextSimulationVersion,
   simulationReady,
-  simulationStarted,
   useWorldSession,
   worldReady,
 } from '../session/worldSession';
@@ -570,8 +572,8 @@ export function App() {
       eraPatches.current.clear();
       dropComposed();
       rawUps.current = genUps.current;
-      // 会话换上新的世界 + 像素 + 各段世界 + 文明(状态 = ready)
-      worldReady({ world: m.world, raster: m.raster }, m.civ, m.eras ? eraMapsOf(m.world, m.baseKey, m.eras) : null);
+      // 会话换上新的世界 + 像素 + 各段世界 + 文明,并结束这件活(状态 = ready)
+      worldReady({ world: m.world, raster: m.raster }, m.civ, m.eras ? eraMapsOf(m.world, m.baseKey, m.eras) : null, m.requestId);
       setProgress(null);
       const rg = regenRef.current;
       if (rg && rg.id === m.id) terrainDoneRef.current(m.world, m.civ, m.ms);
@@ -583,14 +585,28 @@ export function App() {
       setReplay({ w: m.w, h: m.h, frames: m.frames, mya: m.mya, idx: 0 });
     } else if (m.type === 'civ') {
       if (m.seq !== getWorldSession().simulationVersion) return; // 又下了新的干预,等最新的那一次
-      applyResimRef.current(m.civ, m.ms, m.eras, m.baseKey);
+      applyResimRef.current(m.civ, m.ms, m.eras, m.baseKey, m.requestId);
     }
+  };
+  /**
+   * 一件正式世界的活没算成(生成 / 重新生成 / 重推):会话收尾 + 界面解锁 —— 最后一份有效的世界和文明留着,
+   * 面板和助手重新可用。已经被新的一代顶掉的活不做任何事(那不是这一件的事)。
+   */
+  const taskFailed = (requestId: string, e: AppError) => {
+    if (isTaskCancellation(e)) return; // 换世界 / 关服务 / 主动取消:正常收尾,接手的那件已经登记了忙碌状态
+    if (!endWorldTask(requestId)) return; // 已经被顶掉:别动新那件的状态
+    sessionFailed(e);
+    setProgress(null);
+    setResim(null);
+    setTerrainStatus((s) => ({ ...s, busy: false }));
+    regenRef.current = null;
+    resimInfo.current = null;
   };
   /** 线程报错:说明白出了什么事(结构化错误,worker/client.ts 的 onError),而不是让进度条停在那里 */
   workerErrRef.current = (e: AppError) => {
-    sessionFailed(e); // 会话记一笔(状态 = error),界面同时说一句
+    if (isTaskCancellation(e)) return; // 正常收尾:不提示
+    sessionFailed(e); // 会话记一笔(状态 = error);任务本身由上面那条 catch 收尾
     showToast({ id: 'worker', kind: 'error', text: '计算线程出错', more: [e.message] });
-    setProgress(null);
   };
   if (!workerRef.current) {
     workerRef.current = new WorldComputeService({
@@ -693,7 +709,7 @@ export function App() {
    * 重推好的文明换上去(阶段 4 干预):州、宜居度沿用原来那一份(地理没变;时间轴、地图按它认"还是同一个世界"),
    * 选中的东西、编年史的国家筛选按稳定键换成新历史里的编号(指不到就取消),时间轴停在干预那一年
    */
-  const applyResim = (next: Civ, workerMs: number, eras: EraWorld[] | undefined, baseKey: string) => {
+  const applyResim = (next: Civ, workerMs: number, eras: EraWorld[] | undefined, baseKey: string, requestId: string) => {
     const old = getWorldSession().civ;
     const sameUps = sameUpheavals(civUps.current, rawUps.current);
     const civ: Civ = old ? reuseRegions(old, next, sameUps) : next;
@@ -785,8 +801,8 @@ export function App() {
         showToast({ id: 'resim-done', kind: 'ok', text: info.left ? `已撤销,从 ${y} 年起重新推演` : `已撤销,${y} 年之后恢复原历史`, ttl: 4000 });
       }
     }
-    // 会话换上重推好的文明(各段世界按上面算的 nextEras:undefined = 不动、null = 清掉),状态 = ready
-    simulationReady(civ, nextEras);
+    // 会话换上重推好的文明(各段世界按上面算的 nextEras:undefined = 不动、null = 清掉),并结束这件活(状态 = ready)
+    simulationReady(civ, nextEras, requestId);
     setResim(null);
   };
   const applyResimRef = useRef(applyResim);
@@ -814,7 +830,10 @@ export function App() {
       setShownEdits(terrain, t.edits.sketch);
       setTerrainTool({ on: false });
       closeUpheaval();
-      compute.generate({ type: 'generate', id, params: p, scale: 1, terrain: [...terrain], sketch: t.edits.sketch });
+      const job = compute.generate({ type: 'generate', id, params: p, scale: 1, terrain: [...terrain], sketch: t.edits.sketch });
+      // 正式世界的活登记进会话:界面"能不能操作"看它;算炸了 / 线程崩了也有确定的收尾
+      beginWorldTask('generate', job.requestId);
+      job.result.catch((e: AppError) => taskFailed(job.requestId, e));
       // 换世界:改名、干预、选中都属于旧世界,一起作废(先停掉旧世界的自动存,清空不算"改回默认";新世界先按"没有干预、没有地形大事"生成)
       detachWorld();
       civEdits.current = EMPTY_EDITS.interventions;
@@ -893,7 +912,9 @@ export function App() {
     clearChroniclePick();
     if (getChronicle().polity !== null) setChronicle({ polity: null });
     if (getPeople().polity !== null) setPeople({ polity: null });
-    compute.generate({ type: 'generate', id, params: genParams.current, scale: 1, terrain: [...t], sketch: sk, interventions: [...interventions], ...upsOpt(ups) });
+    const job = compute.generate({ type: 'generate', id, params: genParams.current, scale: 1, terrain: [...t], sketch: sk, interventions: [...interventions], ...upsOpt(ups) });
+    beginWorldTask('regenerate', job.requestId);
+    job.result.catch((e: AppError) => taskFailed(job.requestId, e));
   }, [edits.terrain, edits.sketch, baseData, compute]);
 
   // ---- 干预(阶段 4)、地形大事:干预列表或地形大事一变,就在后台带着新的重推文明(地形不动;变了的那一年以前和原来一样) ----
@@ -915,7 +936,7 @@ export function App() {
     const year = years.length ? Math.max(0, Math.min(...years)) : 0;
     civEdits.current = list;
     civUps.current = ups;
-    const seq = simulationStarted();
+    const seq = nextSimulationVersion();
     // 只多了一条 = 新下的干预 / 新加的大事;只少了一条 = 撤销(读档、自动恢复套上的不算,不提示)
     const quiet = list === restoredIv.current && ups === restoredUps.current;
     const one = changed.length + upChanged.length === 1;
@@ -926,7 +947,7 @@ export function App() {
     const note = takeRewriteNote(getEdits()) ?? undefined;
     resimInfo.current = { seq, year, t0: performance.now(), added, removed, upAdded, upRemoved, left: list.length + upNow.length, quiet, note };
     setResim({ year });
-    compute.resimulate({
+    const job = compute.resimulate({
       type: 'resim',
       id: getWorldSession().worldId,
       seq,
@@ -937,6 +958,8 @@ export function App() {
       ...upsOpt(ups),
       have: [...eraPatches.current.keys()],
     });
+    beginWorldTask('resimulate', job.requestId, year);
+    job.result.catch((e: AppError) => taskFailed(job.requestId, e));
   }, [edits.interventions, edits.upheavals, baseData, compute]);
   // 重推的文明画到地图上以后,记下"从下命令到地图更新"用了多久(冒烟检查用)
   useEffect(() => {
@@ -3024,7 +3047,9 @@ export function App() {
 
   const civReady = !!civ && civ.viable;
   /** 正在重推 / 按新地形重新生成 / 生成新世界:助手这时发不了话、确认单也不能执行 */
-  const worldBusy = !!resim || terrainStatus.busy || !!progress;
+  // 忙碌只有会话一个来源(会话里的 task):生成 / 重新生成 / 重推在算 = 忙。
+  // 试推演、预览、回放帧是临时活,不登记,也就不会把界面锁住;算炸了 / 线程崩了任务会收尾,不会一直锁着
+  const worldBusy = session.task !== null;
   // 助手:换了世界、世界建好了,对话跟着换;离开建好的世界(回我的世界、新建)不再看试推演。
   // 打开另一个参数、地形、名字都一样的存档时历史原样复用,所以还要跟着世界的 id(存档一变 App 就重新渲染)
   const worldId = currentWorld()?.id ?? null;

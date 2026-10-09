@@ -3041,17 +3041,35 @@ for (const style of ['realistic', 'fantasy']) {
     await page.waitForTimeout(900);
   }
   // 4. 城面板"迁都到这里":替所属国下迁都令(和国家干预页同一套)→ 面板收起、推演 → "…迁都…,已从 N 年起重新推演"带撤销 → 撤销
+  // 分四段验证,每段等一个明确的状态,而不是"点击后 100 ms 采样一次":
+  //   ① 点击后面板按设计藏起来  ② 重推期间顶部确实说着"正在重新推演"  ③ 推完面板回来(可操作)  ④ 结果和撤销都对
   let moveToast = '';
   let moveHidden = false;
+  let moveBusy = false;
+  let moveBack = false;
   let moveUndo = '';
   if (moveCity >= 0 && (await clickPick('mark', moveCity)) && (await page.locator('.inspector [data-act=move-here]').isEnabled().catch(() => false))) {
     const prev = await page.evaluate(() => (window as any).__wfResim?.seq ?? 0);
+    // 在页面里盯着"重推中"的提示条有没有出现过(每 20 ms 看一眼;推演只有几百毫秒,来回通信的采样会漏掉)
+    await page.evaluate(`(() => {
+      window.__wfMoveBusy = false;
+      const seen = () => { if (document.querySelector('.toast[data-toast=resim]')) window.__wfMoveBusy = true; };
+      seen();
+      window.__wfMoveWatch = setInterval(seen, 20);
+    })()`);
     await page.click('.inspector [data-act=move-here]');
-    await page.waitForTimeout(100);
-    moveHidden = (await insHidden(page));
+    // ① 等它藏起来(藏着的窗口 = 重推耗时,等得到就是对的)
+    moveHidden = await page
+      .waitForFunction(() => !!document.querySelector('.inspector.hidden'), null, { timeout: 3000 })
+      .then(() => true, () => false);
     await page.waitForFunction((s) => ((window as any).__wfResim?.seq ?? 0) > s, prev, { timeout: 20000 }).catch(() => null);
-    await page.waitForTimeout(300);
+    // ② 重推期间确实是忙碌状态(上面那个观察器记着的)
+    moveBusy = (await page.evaluate('window.__wfMoveBusy')) === true;
+    await page.evaluate('clearInterval(window.__wfMoveWatch)');
+    await page.waitForSelector('.toast[data-toast=resim-done]', { timeout: 5000 }).catch(() => null);
     moveToast = await toastText(page, 'resim-done');
+    // ③ 推完面板回来(重新可操作)
+    moveBack = !(await insHidden(page));
     const prev2 = await page.evaluate(() => (window as any).__wfResim?.seq ?? 0);
     await page.click('.toast[data-toast=resim-done] .toast-act').catch(() => {});
     await page.waitForFunction((s) => ((window as any).__wfResim?.seq ?? 0) > s, prev2, { timeout: 20000 }).catch(() => null);
@@ -3062,7 +3080,7 @@ for (const style of ['realistic', 'fantasy']) {
     `城面板「${cityInfo.slice(0, 120)}…」→ 看所属国家「${ownerInfo.slice(0, 40)}」;地理实体面板「${placeInfo.slice(0, 80)}」;` +
       `州面板「${regionInfo.slice(0, 80)}…」→ 划给…「${cedePage.replace(/.*?生效年份/, '生效年份').slice(0, 60)}」→ 压暗 ${dim}、名牌 ${cedePlates.length} 个、提示条「${pickToast}」、面板藏起 ${hidden}` +
       ` → 点名牌「${doneToast}」,这一州的干预「${mineAfter}」→ 撤销「${undoToast}」,列表没了 ${mineGone};` +
-      `迁都到这里 → 面板收起 ${moveHidden}、「${moveToast}」→ 撤销「${moveUndo}」`,
+      `迁都到这里 → 点击后藏起 ${moveHidden}、重推中 ${moveBusy}、推完回来 ${moveBack}、「${moveToast}」→ 撤销「${moveUndo}」`,
   );
   if (!/ \/ 城，\d+ 年建城/.test(cityInfo) || !['级别', '人口', '做过国都', '兴衰', '迁都到这里', '看所属国家', '改名', '名字由来'].every((w) => cityInfo.includes(w)))
     errs.push(`城面板:内容不全(${cityInfo.slice(0, 200)})`);
@@ -3079,8 +3097,8 @@ for (const style of ['realistic', 'fantasy']) {
   if (!mineAfter.includes('划给')) errs.push(`州面板:划给后面板里没列出这一州的干预(${mineAfter})`);
   if (!/^已撤销/.test(undoToast) || !mineGone) errs.push(`州面板:撤销后不对(「${undoToast}」,列表没了 ${mineGone})`);
   if (moveCity < 0) errs.push('城面板:没找到能"迁都到这里"的城');
-  else if (!moveHidden || !/^.+迁都.+,已从 \d+ 年起重新推演 撤销$/.test(moveToast) || !/^已撤销/.test(moveUndo))
-    errs.push(`城面板:"迁都到这里"不对(面板收起 ${moveHidden},「${moveToast}」,撤销「${moveUndo}」)`);
+  else if (!moveHidden || !moveBusy || !moveBack || !/^.+迁都.+,已从 \d+ 年起重新推演 撤销$/.test(moveToast) || !/^已撤销/.test(moveUndo))
+    errs.push(`城面板:"迁都到这里"不对(点击后藏起 ${moveHidden}、重推中 ${moveBusy}、推完回来 ${moveBack},「${moveToast}」,撤销「${moveUndo}」)`);
   await page.evaluate(() => localStorage.clear());
 }
 
