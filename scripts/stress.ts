@@ -11,7 +11,8 @@
  */
 import { generateWorld, DEFAULT_PARAMS } from '../src/gen/world';
 import { rasterize } from '../src/gen/raster';
-import { generateCiv, planetTempo } from '../src/gen/civ';
+import { planetTempo } from '../src/gen/civ';
+import { simulation } from '../src/simulation/simulation';
 import { Biome } from '../src/gen/biomes';
 import { ownersAt } from '../src/gen/civ/timeline';
 import { HABITABLE_SUIT } from '../src/gen/civ/cultures';
@@ -110,7 +111,7 @@ for (const c of cases) {
     const t2 = performance.now();
     // 文明:按 progress 回调的时间点拆出"宜居度 + 划州"两步
     const marks: [string, number][] = [];
-    const civ = generateCiv(w, { tempo }, (stage) => marks.push([stage, performance.now()]));
+    const civ = simulation.run({ world: w, params: { tempo }, progress: (stage) => marks.push([stage, performance.now()]) });
     const t3 = performance.now();
     const civMs = t3 - t2;
     const habReg = (marks.find((m) => m[0] === '文明')?.[1] ?? t3) - t2;
@@ -346,7 +347,7 @@ for (const [name, list] of UPHEAVAL_CASES) {
     const w = generateWorld(params);
     const steps = upheavalSteps(params, [], null, list);
     const t1 = performance.now();
-    const civ = generateCiv(w, { upheavals: steps });
+    const civ = simulation.run({ world: w, params: { upheavals: steps } });
     const t2 = performance.now();
     let cn = 0;
     const worlds = [w, ...steps.map((s) => s.world)];
