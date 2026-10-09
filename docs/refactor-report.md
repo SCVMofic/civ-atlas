@@ -1,13 +1,21 @@
-# 重构报告(TASK-001 ~ TASK-006 · TASK-007A/B/C)
+# 重构报告(TASK-001 ~ TASK-007D,以及 TASK-008A)
 
-对应 RFC:Architecture Refactor / Agent Execution Specification,以及其后的源码审查意见。
+对应 RFC:Architecture Refactor / Agent Execution Specification、其后的源码审查意见,
+以及 `docs/implementation-plan-phase3.md`。
 **原则:Behavior Preservation First, Architecture Improvement Second.**
 
-本文件是第一阶段(TASK-001~006)与第二阶段(TASK-007A/B/C,落实审查的 FINDING-001~005
-与 P1 那条偶发断言)的收口报告:做了什么、依赖关系怎么变了、哪些行为**逐字节**没变、
-哪些地方**故意**变了(以及为什么)、性能与已知问题。
+本文件记:做了什么、依赖关系怎么变了、哪些行为**逐字节**没变、哪些地方**故意**变了(以及为什么)、
+性能与已知问题。三个阶段:
 
-按审查要求,做完 007A/007B/007C **暂停**,等 TASK-008(最小 Simulation façade)的审查放行。
+- **第一阶段(TASK-001 ~ 006)**:基线、确定性回归、存档往返、Worker 边界、WorldSession、网址/路由抽离。
+- **第二阶段(TASK-007A ~ 007C)**:落实审查的 FINDING-001~005 与 P1 那条偶发断言
+  (Worker 故障恢复、正式世界任务的单一状态来源、重新验收)。
+- **第三阶段(TASK-007D 起)**:按 `implementation-plan-phase3.md` 走 ——
+  007D 冒烟点击路径收口(已完成)、008A 调用图与边界清单(已完成,见 `docs/simulation-boundary.md`)、
+  008B 最小 façade(已批准实施)、008C 单调用点迁移、009 全量回归与阶段冻结。
+
+> 当前进度:007D 与 008A 已完成;**008B 已获有条件放行**,正在实现;008C 尚未开始
+> (按审查要求,façade 独立通过测试之后才迁移调用点)。
 
 ---
 
@@ -244,6 +252,9 @@ UI(App.tsx)
 ---
 
 ## 9. 每步的验收记录
+
+> 第二、三阶段的验收记录在文末:「第二阶段:TASK-007A / 007B / 007C(审查意见的落实)」
+> 与「TASK-007D」「TASK-008A」两节;下面这几条是第一阶段的。
 
 ### TASK-001 基线(`72ed8a6`)
 
