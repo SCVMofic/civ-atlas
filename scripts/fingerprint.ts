@@ -11,7 +11,8 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { DEFAULT_PARAMS, generateWorld, type WorldParams } from '../src/gen/world';
-import { generateCiv, type Civ } from '../src/gen/civ';
+import type { Civ } from '../src/gen/civ';
+import { simulation } from '../src/simulation/simulation';
 import { rasterize } from '../src/gen/raster';
 import { buildHistoryFrames } from '../src/gen/history';
 import { buildChronicle } from '../src/gen/civ/chronicle';
@@ -140,12 +141,12 @@ function pickInterventions(civ: Civ): Intervention[] {
 function fingerprint(c: Case): Record<string, string> {
   const params = { ...DEFAULT_PARAMS, ...c.params };
   const w = generateWorld(params, undefined, c.terrain);
-  let civ = generateCiv(w);
+  let civ = simulation.run({ world: w });
   const out: Record<string, string> = {};
   if (c.interventions) {
     const list = pickInterventions(civ);
     out['interventions'] = print(list);
-    civ = generateCiv(w, { interventions: list });
+    civ = simulation.run({ world: w, params: { interventions: list } });
   }
   for (const k of Object.keys(w).sort()) out[`world.${k}`] = print((w as unknown as Record<string, unknown>)[k]);
   for (const k of Object.keys(civ).sort()) out[`civ.${k}`] = print((civ as unknown as Record<string, unknown>)[k]);
