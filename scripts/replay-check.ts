@@ -4683,10 +4683,14 @@ for (const style of ['realistic', 'fantasy']) {
   await mp.evaluate(() => (window as any).__wfSelect('polity', -1));
   await mp.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })));
   await mp.waitForTimeout(300);
-  // 点国家 → 底部抽屉半高;国家落在抽屉上方
-  const pol = ((await mp.evaluate('window.__wfPickables()')) as Pick[])
-    .filter((q) => q.kind === 'polity' && q.x > 40 && q.x < VW - 40 && q.y > 130 && q.y < VH - 200)
-    .sort((a, b) => Math.abs(a.x - VW / 2) + Math.abs(a.y - VH / 2) - Math.abs(b.x - VW / 2) - Math.abs(b.y - VH / 2))[0];
+  // 点国家 → 底部抽屉半高;国家落在抽屉上方。
+  // 挨个挑"能结盟的"那一国:这张图上看得到的国家未必每一国都有可结盟的对象(没有的话干预页的
+  // "结盟"是灰的),不能让"挑中哪一国"决定后面那几段断言跑不跑得到(挑不到就在下面报出来,不静默跳过)
+  const pickPolities = async (skip: Set<number>) =>
+    ((await mp.evaluate('window.__wfPickables()')) as Pick[])
+      .filter((q) => q.kind === 'polity' && !skip.has(q.id) && q.x > 40 && q.x < VW - 40 && q.y > 130 && q.y < VH - 200)
+      .sort((a, b) => Math.abs(a.x - VW / 2) + Math.abs(a.y - VH / 2) - Math.abs(b.x - VW / 2) - Math.abs(b.y - VH / 2));
+  const pol = (await pickPolities(new Set<number>()))[0];
   let sheet0: Rect = null;
   let row1: Rect = null;
   let fullCapsuleHidden = false;
@@ -4701,13 +4705,20 @@ for (const style of ['realistic', 'fantasy']) {
   let doneToast = '';
   let undoToast = '';
   let tgtText = '';
-  if (pol) {
-    await mp.touchscreen.tap(pol.x, pol.y);
+  let allied = false;
+  const triedPol = new Set<number>();
+  for (let attempt = 0; attempt < 6 && !allied; attempt++) {
+    const cand = (await pickPolities(triedPol))[0];
+    if (!cand) break;
+    triedPol.add(cand.id);
+    await mp.touchscreen.tap(cand.x, cand.y);
     await mp.waitForTimeout(1100);
-    hover = await mp.locator('.hover-card').count();
-    sheet0 = await box('.inspector.sheet');
-    row1 = await box('.bottom-row');
-    ring = await box('.tp-mark .tp-ring');
+    if (attempt === 0) {
+      hover = await mp.locator('.hover-card').count();
+      sheet0 = await box('.inspector.sheet');
+      row1 = await box('.bottom-row');
+      ring = await box('.tp-mark .tp-ring');
+    }
     info = (await mp.locator('.inspector').innerText().catch(() => '')).replace(/\n/g, ' / ');
     // 往上拖拖动条 → 展开
     const grip = await box('.inspector .sheet-grip');
@@ -4722,28 +4733,46 @@ for (const style of ['realistic', 'fantasy']) {
     await mp.tap('.inspector [data-act=intervene]');
     await mp.waitForTimeout(300);
     cmds = await mp.locator('.inspector .cp-cmd').count();
-    if (await mp.locator('.inspector .cp-cmd[data-cmd=ally]').isEnabled().catch(() => false)) {
-      await mp.tap('.inspector .cp-cmd[data-cmd=ally]');
-      await mp.waitForTimeout(1100);
-      pickToast = await mToast('pick');
-      hiddenWhilePicking = !(await mp.locator('.inspector').isVisible().catch(() => false));
-      const tgt = ((await mp.evaluate('window.__wfPlates()')) as Plate[])
-        .filter((p) => !p.self && p.x > 30 && p.x < VW - 30 && p.y > 150 && p.y < VH - 120)
-        .sort((a, b) => Math.abs(a.y - VH / 2) - Math.abs(b.y - VH / 2))[0];
-      if (tgt) {
-        tgtText = tgt.text;
-        const prev = await mp.evaluate(() => (window as any).__wfResim?.seq ?? 0);
-        await mp.touchscreen.tap(tgt.x, tgt.y);
-        await mp.waitForFunction((s) => ((window as any).__wfResim?.seq ?? 0) > s, prev, { timeout: 20000 }).catch(() => null);
-        await mp.waitForTimeout(300);
-        doneToast = await mToast('resim-done');
-        const prev2 = await mp.evaluate(() => (window as any).__wfResim?.seq ?? 0);
-        await mp.tap('.toast[data-toast=resim-done] .toast-act').catch(() => {});
-        await mp.waitForFunction((s) => ((window as any).__wfResim?.seq ?? 0) > s, prev2, { timeout: 20000 }).catch(() => null);
-        await mp.waitForTimeout(300);
-        undoToast = await mToast('resim-done');
-      }
+    if (!(await mp.locator('.inspector .cp-cmd[data-cmd=ally]').isEnabled().catch(() => false))) {
+      // 这一国没有可结盟的对象:收起卡片、换一个(地图飞过去以后名牌位置会变,所以每次都重新取)
+      await mp.locator('.inspector .cp-x').tap().catch(() => {});
+      await mp.waitForTimeout(500);
+      continue;
     }
+    await mp.tap('.inspector .cp-cmd[data-cmd=ally]');
+    await mp.waitForTimeout(1100);
+    pickToast = await mToast('pick');
+    hiddenWhilePicking = !(await mp.locator('.inspector').isVisible().catch(() => false));
+    const tgt = ((await mp.evaluate('window.__wfPlates()')) as Plate[])
+      .filter((p) => !p.self && p.x > 30 && p.x < VW - 30 && p.y > 150 && p.y < VH - 120)
+      .sort((a, b) => Math.abs(a.y - VH / 2) - Math.abs(b.y - VH / 2))[0];
+    if (tgt) {
+      tgtText = tgt.text;
+      const prev = await mp.evaluate(() => (window as any).__wfResim?.seq ?? 0);
+      // 按元素点(等名牌可见 / 稳定 / 可点),不按坐标点:名牌是绝对定位 + 有进场动画,
+      // 坐标点走的是合成触摸,卡片拉满时容易被别的手势吃掉(偶发"点了没反应"、整段干预检查白跑)
+      const plateSel = `.tp-layer .tp-plate[data-kind="` + '${tgt.kind}' + `"][data-id="` + '${tgt.id}' + `"]`;
+      await mp
+        .locator(plateSel)
+        .click({ timeout: 5000 })
+        .catch(() => mp.touchscreen.tap(tgt.x, tgt.y)); // 兜底:名牌没找着就还按坐标点
+      await mp.waitForFunction((s) => ((window as any).__wfResim?.seq ?? 0) > s, prev, { timeout: 20000 }).catch(() => null);
+      await mp.waitForTimeout(300);
+      doneToast = await mToast('resim-done');
+      const prev2 = await mp.evaluate(() => (window as any).__wfResim?.seq ?? 0);
+      await mp.tap('.toast[data-toast=resim-done] .toast-act').catch(() => {});
+      await mp.waitForFunction((s) => ((window as any).__wfResim?.seq ?? 0) > s, prev2, { timeout: 20000 }).catch(() => null);
+      await mp.waitForTimeout(300);
+      undoToast = await mToast('resim-done');
+    }
+    allied = true;
+  }
+  if (pol && !allied) errs.push('手机:挑不出能结盟的国家(看到的几个都没有可结盟的对象)');
+  // 挑不出能结盟的国家时,详情卡片可能还停在拉满的状态(没发生重推,卡片就停在那儿 —— 这是正常表现,
+  // 上面已经报过这个情况):先关掉它,免得右上那排按钮一直藏着、后面整段手机流程都点不到、整个脚本半路崩掉
+  if (pol && !allied) {
+    await mp.locator('.inspector .cp-x').tap().catch(() => {});
+    await mp.waitForTimeout(500);
   }
   // 图层抽屉:从底部升起、铺满宽度;切到实景
   await mp.tap('[data-act=layers]');
