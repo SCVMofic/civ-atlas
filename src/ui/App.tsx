@@ -1774,7 +1774,8 @@ export function App() {
     }
     return c;
   }, []);
-  const { thumbs, request: requestThumbs } = useLayerThumbs({ data, civ: rawCiv, baseCanvas }, mapLayer);
+  // 缩略图和地图画同一段:时间轴在地形大事以前时,底图是那一段的,州也要用那一段的(shownRaw)
+  const { thumbs, request: requestThumbs } = useLayerThumbs({ data, civ: shownRaw, baseCanvas }, mapLayer);
 
   // ---- 回放:看世界长出来 ----
   const startReplay = () => {
