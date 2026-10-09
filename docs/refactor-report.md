@@ -251,6 +251,43 @@ UI(App.tsx)
 
 ---
 
+## TASK-008B:最小 Simulation façade
+
+按 `implementation-plan-phase3.md` 有条件放行实施。**只建立边界,不做 008C 的调用点迁移。**
+
+- 新文件 `src/simulation/simulation.ts`:一行委托 ——
+  `run({ world, params?, progress? })` → 原样调 `gen/civ/index.ts` 的 `generateCiv(...)` → 返回**同一个** `Civ`。
+  放在 `src/simulation/`(不在 `src/gen/**` 里),所以"不改 `src/gen/civ/**`"这句话字面上也成立。
+- 硬性约束逐条对上:不重写 `CivSim` / 事件调度 / 生成流程;不新建引擎实例、不复制文明状态、不加第二真值;
+  不改 install 顺序与 `seq` 分配;不把引擎细节暴露给调用方;不吞异常、不自动重试;不包成 async;
+  不依赖 React / DOM / Worker(只 import `src/gen/**`)。
+- 为什么返回 `Civ` 而不是再造一个 `SimulationResult` 壳:今天调用方要的就是这份 `Civ`,壳里没有别的东西可放 ——
+  等真有了再包(边界清单 §8 记了这条)。
+
+测试 `tests/simulation-facade.test.ts`(13 个用例,覆盖审查点名的四件事):
+
+| 要证明的 | 怎么证 |
+| --- | --- |
+| 参数与 progress 原样传递 | `params` 生效(`endYear` 1200);同一输入下 facade 与旧入口收到**同一串**阶段与百分比;不给参数也照跑 |
+| 与旧入口逐字段一致 | 5 组输入(默认 / 截年 / 干预 / 地形大事 / 三者一起)各比一遍:`changedFields(fieldsOf('civ.', old), fieldsOf('civ.', via))` 为空,整体哈希也相同 |
+| 异常继续上抛 | 传坏 world:`generateCiv` 与 façade 抛**同一个类、同一句话**,且 façade 不会"返回" |
+| 不新增引擎 / 状态副本 / 异步包装 | `run` 同步返回且不是 thenable;façade 只有 `run` 一个成员;连着跑、中间插别的推演,结果都一样(无状态、无第二真值) |
+| 只依赖纯计算(静态护栏) | 读源码:import 只许 `../gen/**`;去掉注释后不许出现 `new Worker` / `document.` / `window.` / `React` |
+
+验收(本提交上实跑):
+
+| 命令 | 结果 |
+| --- | --- |
+| `pnpm typecheck` | ✅ |
+| `pnpm test` | ✅ **85 文件 / 1274 个用例**(008B 新增 13) |
+| `pnpm build` | ✅ 6.36 s;index 1420.63 kB(gzip 560.67)、worker 300.44 kB —— **和 008B 之前一模一样**(façade 还没被任何地方 import,不进包) |
+| `scripts/fingerprint.ts --check` | ✅ **21 组全部一致** |
+| 存档往返相关 | ✅ `regression-save-roundtrip` + `savefile` + `share` 共 **112 个用例**全过;`SAVE_FORMAT = 1`、`GENERATOR_VERSION = 9` 未动 |
+| `src/gen` / `src/render` / `src/worker` / `src/ui` / `src/session` | **一行未动**(`git diff` 为空)⇒ 没有任何调用点被迁移 |
+
+性能:façade 目前没有调用方,跑不到它 ⇒ 没有可比的运行时数据,也就没有回归可言(既有那两条性能债不变,见 §8)。
+**008C 尚未开始** —— 按审查要求,façade 独立通过测试之后,再单独审查并逐个迁移调用点。
+
 ## 9. 每步的验收记录
 
 > 第二、三阶段的验收记录在文末:「第二阶段:TASK-007A / 007B / 007C(审查意见的落实)」
