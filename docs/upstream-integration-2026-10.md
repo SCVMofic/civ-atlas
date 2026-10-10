@@ -168,7 +168,71 @@ TASK-011A 已探明、已记录、已接受的现象(`docs/simulation-event-audi
 5. **指纹基线未更新**:本次默认路径指纹与基线一致,故 `docs/baseline-fingerprint.json`
    无需重存。若日后上游改动默认命名,应重新评审而非直接改基线。
 
-## 8. 未推送、未合并
+## 8. 交付状态(2026-10-10 更新)
 
-分支停在 `integration/upstream-2026-10`,**未 push、未合并进 `main`、未部署**。待维护者
-审阅本报告与 §7 的遗留项后再决定。
+分支 `integration/upstream-2026-10` 已推送到 `origin`(SCVMofic/civ-atlas),并开了一个
+以 `main` 为目标的 PR(https://github.com/SCVMofic/civ-atlas/pull/1)。**未合并进 `main`、
+未部署**。PR 仅用于取得 GitHub CI 记录与审查。
+
+## 9. 验收复跑(第二轮,2026-10-10)
+
+环境:Windows + Git Bash,Node `v26.6.0`,pnpm `11.24.0`。
+
+### 9.1 自动化验收(P0)
+
+| 项目 | 命令 | 结果 |
+| --- | --- | --- |
+| 类型检查 | `pnpm typecheck` | 退出码 0 |
+| 全量测试 | `pnpm test` | 退出码 0,89 文件 / 1320 用例全过 |
+| 生产构建 | `pnpm build` | 退出码 0 |
+| 指纹对账 | `pnpm exec tsx scripts/fingerprint.ts --check docs/baseline-fingerprint.json` | 退出码 0,21 组全部一致 |
+| 恢复推演探针 | `pnpm exec tsx scripts/probe-resume-order.ts` | 退出码 0,24 组:轨迹 22、日志 0、史事 0、检查点 0、归属 0 |
+| 端到端冒烟(CI 预算) | `CI=1 pnpm smoke` | **退出码 0,errors: []**(拖动每帧中位数 16.7 ms < CI 预算 40 ms) |
+
+冒烟说明:此前在**未设 CI 变量**时本机冒烟会命中「拖动每帧太慢」(本地预算 16 ms);
+合并后 17.5 ms、基线 18.7 ms,两边同一条,属本机负载敏感的性能预算。按 CI 口径
+(`CI=1`,预算 40 ms)复跑**完整通过**,可记为"功能冒烟通过,常规本地性能预算仍有既有失败"。
+未删除或放宽任何性能断言。
+
+### 9.2 GitHub CI(P1)
+
+PR #1 触发的 workflow run `38051179712`(commit `f1e2ae7`):
+
+| 任务 | 结果 |
+| --- | --- |
+| 类型检查 / 单测 / 压力 / 构建 | ✅ success(9m14s) |
+| 画面回归 | ✅ success(1m19s) |
+| 冒烟 | ✅ success(约 28 分钟,CI 上属正常) |
+| 最近一天有没有代码改动 | 跳过(仅 schedule 触发) |
+
+四项全绿,无失败项。
+
+### 9.3 浏览器功能验收(P1)
+
+用 ZCode 内置浏览器对着本地 dev server(`vite`,端口 5199)做:
+
+- **地名风格端到端**:新建世界 → 地名风格页(默认「自动」显示 中式 27% / 音译 73%)→
+  「自己配」→「全中式」→ 比例变 中式 100% → 创建确认框列出「地名风格:全中式」→ 创建后
+  地图标注全为中式(碧波洋、大霄、揽霞城、宁州、浮床之山……),无音译名。配置贯通成立。
+- **旧存档首次重存留底**:注入 `generator=8` 的旧存档 → 打开后自动按新版重存,
+  `wenming-ditu:orig:<id>` 出现且为 `generator=8`(原样)→ 再次改名保存后,`orig` 仍是
+  `generator=8`、`savedAt` 不变,当前存档变 `generator=9`。**最早备份不被覆盖**。
+- **看原样入口**:gen 8 的原始份**没有**「看原样」—— 正确,因为 `FIRST_OLD_SITE = 9`,
+  `[9, GENERATOR_VERSION)` 在当前 `GENERATOR_VERSION = 9` 下为空;与冒烟脚本预期(0)一致。
+- **非零中央经线草图(e0ae720)**:`lon=120` 的新建界面上用火山工具落一笔,
+  `.terrain-marks` 组内出现 `tt-mark k-volcano`,`tt-line`/`tt-halo` 计算样式为
+  `fill: none` + 可见描边;截图里是一圈可见的白色轮廓,**不是黑色实心块**。外层还有
+  3 个 `<use>` 复制份。
+- **时间轴缩略图(372f4e0)**:`shownRaw = civAtEra(rawCiv, eraK)`,并传给
+  `useLayerThumbs({ data, civ: shownRaw, ... })`(App.tsx:1649)—— 代码级核对通过;
+  未构造"地形大事 + 时间轴回退 + 图层缩略图对比"的完整可视化场景。
+
+### 9.4 元数据(P2)
+
+- `package.json` 的 `repository`、`src/ui/links.ts` 的 `SOURCE_URL`、README 的链接**都**指向
+  `guaner-334/civ-atlas`,彼此一致(这是保留上游出处的写法)。是否改成
+  `SCVMofic/civ-atlas` 是维护者的产品决定,不是本次合并的阻断项;若改,应四处一起改。
+- `deploy.yml`(push main)与 `deploy-old-site.yml`(手动)**都**带
+  `if: github.repository == 'guaner-334/civ-atlas'`,在 `SCVMofic/civ-atlas` 上会被跳过 ——
+  合并进 `main` 也不会触发部署。
+
