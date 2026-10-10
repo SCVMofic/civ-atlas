@@ -7,7 +7,7 @@
 
 在浏览器里生成一颗完整的星球并推演它的历史：用板块运动、河流侵蚀、气候与洋流算出地形和生态，再模拟民族、国家、战争与王朝更替，得到可以编辑的地图和编年史。面向小说、设定集、跑团等原创世界观创作。
 
-**[在线使用](https://atlas.gerdor.top)** | [路线图](#路线图) | [开发说明](docs/development.md) | [反馈问题](https://github.com/guaner-334/civ-atlas/issues)
+**[在线使用](https://atlas.gerdor.top)** | [路线图](#路线图) | [开发说明](docs/development.md) | [反馈问题](https://github.com/guaner-334/civ-atlas/issues) | [QQ 交流群 925687934](#反馈与参与)
 
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/guaner-334/civ-atlas)](https://github.com/guaner-334/civ-atlas/releases)
@@ -166,6 +166,7 @@ pnpm dev        # http://localhost:5188
 ## 反馈与参与
 
 - 问题和建议请提交 [Issue](https://github.com/guaner-334/civ-atlas/issues)。报告画面问题时请附上完整网址（其中包含种子，同一个种子会生成同一个世界）和截图。
+- QQ 交流群：925687934，反馈问题、聊聊你的世界都可以。
 - 目前不接受外部的 Pull Request，详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 - 安全问题请通过仓库的 Security → Report a vulnerability 私下报告，不要发公开 Issue。
 
