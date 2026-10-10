@@ -287,3 +287,18 @@ export function trialText(d: TrialDiff): string {
   if (!d.addedCount && !d.removedCount) out.push(`第 ${d.from} 年以后的大事没有变化。`);
   return out.join('\n');
 }
+
+/** 两个结局一样(亡国年份、怎么亡、被谁、最后几州) */
+const sameFate = (a: Fate | null, b: Fate | null): boolean =>
+  a === b || (!!a && !!b && a.end === b.end && a.way === b.way && a.by?.id === b.by?.id && a.by?.name === b.by?.name && a.size === b.size);
+
+/** 试推演和现在看不出差别:关注的国家结局都没变、别的国家没有变化大的、在世的国家数一样、大事一条没变 */
+export function trialUnchanged(d: TrialDiff): boolean {
+  return (
+    !d.addedCount &&
+    !d.removedCount &&
+    !d.others.length &&
+    d.alive[0] === d.alive[1] &&
+    d.focus.every((c) => sameFate(c.before, c.after))
+  );
+}

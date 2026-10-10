@@ -10,12 +10,14 @@ import { ownersAt } from '../src/gen/civ/timeline';
 import { applyNames, polityKey, regionKey, type WorldEdits } from '../src/gen/edits';
 import { setActiveProvider, setMockResponder } from '../src/ai/client';
 import { AiError, type AiRequest } from '../src/ai/types';
-import { AGENT_MAX_ROUNDS, TOOL_RESULT_MAX, parseToolArgs, runAgent, type AgentEvent, type AgentTool, type AgentToolResult } from '../src/ai/agent/loop';
+import { AGENT_MAX_ROUNDS, FINAL_NUDGE, TOOL_RESULT_MAX, looksUnfinished, parseToolArgs, runAgent, type AgentEvent, type AgentTool, type AgentToolResult } from '../src/ai/agent/loop';
 import { compareTrial, fateText, matchPolities, trialText } from '../src/ai/agent/trial';
 import {
   ASSISTANT_FEATURE,
   ASSISTANT_SYSTEM,
   TRIAL_MAX,
+  TRIAL_SAME_MAX,
+  UNFINISHED_NOTE,
   assistantMessages,
   assistantTools,
   polityOf,
@@ -176,6 +178,31 @@ describe('助手的循环', () => {
     expect(out.steps).toHaveLength(2);
     expect(out.text).toBe('再查查。');
     expect(AGENT_MAX_ROUNDS).toBeGreaterThanOrEqual(6);
+    // 最后一轮之前补一句"直接说结论";前几轮没有
+    const lastMsg = (r: AiRequest) => r.messages[r.messages.length - 1];
+    expect(lastMsg(seen[2])).toEqual({ role: 'user', content: FINAL_NUDGE });
+    expect(seen.slice(0, 2).some((r) => r.messages.some((m) => m.content === FINAL_NUDGE))).toBe(false);
+    expect(FINAL_NUDGE).toMatch(/直接告诉作者结论/);
+  });
+
+  it('到了轮数上限、最后一轮老实收尾(不再要调工具):也算 rounds;只问一轮的不补那句话、算 done', async () => {
+    let seen = script({ calls: [['echo', { x: 1 }]] }, { calls: [['echo', { x: 2 }]] }, '做不到:命令只能定条件。');
+    let out = await runAgent({ feature: '测试', messages: [{ role: 'user', content: '…' }], tools: [echo], maxRounds: 3 });
+    expect(out.text).toBe('做不到:命令只能定条件。');
+    expect(out.end).toBe('rounds');
+    expect(seen[2].messages.filter((m) => m.content === FINAL_NUDGE)).toHaveLength(1);
+    seen = script('直接回答。');
+    out = await runAgent({ feature: '测试', messages: [{ role: 'user', content: '…' }], tools: [echo], maxRounds: 1 });
+    expect(out.end).toBe('done');
+    expect(seen[0].toolChoice).toBe('none');
+    expect(seen[0].messages.some((m) => m.content === FINAL_NUDGE)).toBe(false);
+  });
+
+  it('收尾的话像没说完:以冒号结尾,或者最后一段是"让我再查……"这类', () => {
+    for (const t of ['让我也查询赤牙王朝在同一时期的详细编年史：', '先看结果。\n\n接着查一下:', '试了四次都不行。\n\n让我再试一次，这次试试组合效果。', '我先看看那一年的格局'])
+      expect(looksUnfinished(t), t).toBe(true);
+    for (const t of ['', '做不到：命令只能定条件，不能规定谁打赢。', '让我总结一下：保护以后它撑到了最后。', '我再说一句，这是试推演的结果。'])
+      expect(looksUnfinished(t), t).toBe(false);
   });
 
   it('做过步骤再收尾不说话可以(结果已经在面板上);一步没做、一句没说算空回复', async () => {
@@ -357,6 +384,33 @@ describe('助手', () => {
     await expect(Promise.resolve().then(() => noSim.try_edits.run({ edits: [PROTECT] }))).rejects.toThrow('不能试推演');
     const r3 = await said(noSim.propose_edits.run({ edits: [PROTECT] }));
     expect(r3).not.toContain('试推演');
+  });
+
+  it('试推演连着几次都和现在一样:提醒 AI 多半做不到、直接说;中间有一次变了就重新数', async () => {
+    const state: { trials: AssistantTrial[]; proposal: AssistantProposal | null } = { trials: [], proposal: null };
+    let same = true;
+    const sim = async (e: WorldEdits) => (same ? civ : simulate(e));
+    const tools = Object.fromEntries(assistantTools(ctx({ simulate: sim }), state).map((t) => [t.def.name, t]));
+    const hint = /连着 \d+ 次试推演,历史都和现在一样.*多半用命令做不到/;
+    for (let i = 1; i < TRIAL_SAME_MAX; i++) expect(await said(tools.try_edits.run({ edits: [PROTECT] }))).not.toMatch(hint);
+    const r = await said(tools.try_edits.run({ edits: [PROTECT] }));
+    expect(r).toMatch(hint);
+    expect(r).toContain(`连着 ${TRIAL_SAME_MAX} 次`);
+    // 提醒放在最后(试推演结果之后)
+    expect(r.indexOf('大事没有变化')).toBeLessThan(r.search(hint));
+    // 真的变了一次:重新数
+    same = false;
+    expect(await said(tools.try_edits.run({ edits: [PROTECT] }))).not.toMatch(hint);
+    same = true;
+    expect(await said(tools.try_edits.run({ edits: [PROTECT] }))).not.toMatch(hint);
+  });
+
+  it('收尾的话像没说完:后面补一句,作者知道可以说「继续」', async () => {
+    script({ calls: [['country', { country: `P${victim}` }]] }, '让我也查询它的邻国在同一时期的详细编年史：');
+    const r = await runAssistant(ctx(), [], `让${vName}打赢那一仗`);
+    expect(r.text).toBe(`让我也查询它的邻国在同一时期的详细编年史：\n\n${UNFINISHED_NOTE}`);
+    script({ calls: [['country', { country: `P${victim}` }]] }, '做不到：命令只能定条件，不能规定谁打赢。');
+    expect((await runAssistant(ctx(), [], `让${vName}打赢那一仗`)).text).toBe('做不到：命令只能定条件，不能规定谁打赢。');
   });
 
   it('列确认单:同一批修改换了顺序不算试过(同一年的修改按先后执行,结果可能不同),顺带重新试推演', async () => {
