@@ -238,7 +238,11 @@ UI(App.tsx)
 3. **`bench/` 目录(RFC §28)没建**:基线报告里记了 `stress` / `fingerprint` 的逐组耗时当基准,
    但没有独立的 benchmark 目录与内存指标(`--expose-gc` + `process.memoryUsage()`)。
 
-4. **第二阶段修掉的三条**(留档,免得以后又当新问题查一遍):
+4. **GitHub CI 对"直接推到 main"的提交没有独立记录**:`ci.yml` 只在 PR / 每天定时 / 手动触发,
+   push 到 main 不跑(设计如此)。所以本仓库里"本地全绿"**不等于**"CI 通过";
+   要独立记录就开 PR、手动触发或等定时那次。详见 TASK-011 冻结记录。
+
+5. **第二阶段修掉的三条**(留档,免得以后又当新问题查一遍):
    - worker **线程级**异常没有回执、活一直挂着 → TASK-007A(现在按 `worker:crashed` 收尾,不自动重放);
    - `status` 与 `progress` / `resim` 双轨、失败后界面一直锁着 → TASK-007B(会话里的 `task` 是唯一来源);
    - 冒烟「城面板 → 迁都到这里」按瞬间采样 → TASK-007B(改成四段各等一个明确状态)。
@@ -569,6 +573,12 @@ TASK-009 的第一次 `pnpm test` 出现 **1 个失败 / 1273 通过**(85 文件
   现有 `expectResumeSame` 在干预与大事的若干切点上验的是结果一致,不是全参数覆盖。
 - **既有性能债不变**(软件渲染下的拖动帧预算、stress 四项、`names.test.ts` 墙上时钟、`bench/` 未建);
   **009 阶段那次未复现的偶发失败**仍开放。
+- **GitHub CI 没有独立记录**(实测,不是推测):这五个 TASK-011 提交(`ea1d4b4` / `3b65a1d` / `8362d09` /
+  `8e7c574` / `96fb5a4`)在 GitHub 上都是 **`combined=pending`、`statuses=0`** —— 一个 check 都没挂;
+  `gh run list -R SCVMofic/civ-atlas` 为空。原因在**设计**:`.github/workflows/ci.yml` 只在
+  **PR / 每天定时(schedule)/ 手动(workflow_dispatch)** 触发,注释写明"合并进 main 后不重跑",
+  所以**直接推到 main 的提交本来就没有 CI 状态**。⇒ **不得把本文件里的本地验收表述成
+  "GitHub CI 独立通过"**。要拿到独立记录:开一个 PR(CI 会跑)、或手动触发一次、或等每天那次兜底。
 
 **结论:TASK-011 四项完成 —— 风险已变成证据,证据已变成契约,契约支持"不改代码"的决策;
 六项检查通过(功能项全绿,性能债单独标注)。建议冻结本阶段。**
