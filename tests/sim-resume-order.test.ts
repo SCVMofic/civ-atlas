@@ -12,7 +12,7 @@
  * - 一口气跑 23 条、切段恢复 21 条,第 4 条(index 3)起分叉:
  *     一口气跑: … 看邻国(1,16)@2601.605 → 立国(4,214)@2602.414 → 看内政(1,16)@2603.098
  *     切段恢复: … 立国(4,214)@2602.414 → 战役(0,31)@2603.621 → 立国(99,314)@2603.75
- * - 但 ChangeLog 逐字段、史事、检查点、最终归属**完全一致**。
+ * - 但 ChangeLog 逐字段、史事、检查点(**年份 + 每个检查点的民族层与国家层**)、最终归属**完全一致**。
  *
  * 这条测试把**现状**钉住:顺序差异是真的(不许说"没有差异"),而结果一致也是真的
  * (不许在没解释的情况下把它放宽成"结果可以不同")。详见 docs/simulation-event-audit.md 的 011 部分。
@@ -96,9 +96,15 @@ describe('恢复推演 · 同刻事件顺序(TASK-011A 反例)', () => {
     expect(Array.from(b.log.layer)).toEqual(Array.from(a.log.layer));
     expect(Array.from(b.log.value)).toEqual(Array.from(a.log.value));
     expect(Array.from(b.log.cause)).toEqual(Array.from(a.log.cause));
-    // 史事与检查点
+    // 史事
     expect(b.annals).toEqual(a.annals);
-    expect(b.checkpoints.map((c) => c.year)).toEqual(a.checkpoints.map((c) => c.year));
+    // 检查点:契约 §1.2 承诺的是"年份 + 每个检查点的民族层与国家层都逐字节一致",三样都要比
+    expect(b.checkpoints.length, '检查点个数').toBe(a.checkpoints.length);
+    expect(b.checkpoints.map((c) => c.year), '检查点年份序列').toEqual(a.checkpoints.map((c) => c.year));
+    for (let i = 0; i < a.checkpoints.length; i++) {
+      expect(Buffer.from(b.checkpoints[i].polity.buffer).equals(Buffer.from(a.checkpoints[i].polity.buffer)), `第 ${i} 个检查点的国家层`).toBe(true);
+      expect(Buffer.from(b.checkpoints[i].culture.buffer).equals(Buffer.from(a.checkpoints[i].culture.buffer)), `第 ${i} 个检查点的民族层`).toBe(true);
+    }
     // 最终归属
     expect(Buffer.from(b.polity.buffer).equals(Buffer.from(a.polity.buffer)), '国家归属').toBe(true);
     expect(Buffer.from(b.culture.buffer).equals(Buffer.from(a.culture.buffer)), '民族归属').toBe(true);

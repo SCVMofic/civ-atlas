@@ -10,6 +10,7 @@
  * 再比:轨迹、ChangeLog(逐字段)、史事、检查点、最终归属。
  *
  * 比较范围:`t > cut` 的那一段(切开那一刻的边界语义是另一个话题,先排除掉)。
+ * 检查点比的是**年份 + 民族层 + 国家层**(契约 docs/simulation-resume-contract.md §1.2 承诺的三样)。
  *
  * 用法:
  *   npx tsx scripts/probe-resume-order.ts                 # 默认:6 个种子 × 4 个切分年份
@@ -17,6 +18,7 @@
  *
  * 本脚本不改任何生产代码;它是"探索范围"的证据,不是"不存在差异"的证明。
  */
+import { createHash } from 'node:crypto';
 import { DEFAULT_PARAMS, generateWorld, type World, type WorldParams } from '../src/gen/world';
 import { generateCiv, type Civ } from '../src/gen/civ';
 import { CivSim, EVENT_INFO } from '../src/gen/civ/sim';
@@ -66,7 +68,7 @@ function straight(params: WorldParams, world: World, endYear: number): Run {
       culture: civ.culture,
       log: logOf(civ.log),
       annals: JSON.stringify(civ.annals),
-      checkpoints: JSON.stringify(civ.checkpoints.map((c) => [c.year, Array.from(c.polity)])),
+      checkpoints: checkpointDigest(civ.checkpoints),
     };
   } finally {
     restore();
@@ -89,11 +91,27 @@ function resumed(params: WorldParams, world: World, cut: number, endYear: number
       culture: res.culture,
       log: logOf(res.log),
       annals: JSON.stringify(res.annals),
-      checkpoints: JSON.stringify(res.checkpoints.map((c) => [c.year, Array.from(c.polity)])),
+      checkpoints: checkpointDigest(res.checkpoints),
     };
   } finally {
     restore();
   }
+}
+
+/**
+ * 检查点的指纹:**年份 + 民族层 + 国家层**(契约 §1.2 承诺的三样),逐字节算进摘要。
+ * 整份数组 JSON 太大,这里用 sha1 摘要 —— 一样能判"逐字节是否相同"。
+ */
+function checkpointDigest(cps: { year: number; culture: Int16Array; polity: Int16Array }[]): string {
+  const h = createHash('sha1');
+  for (const c of cps) {
+    h.update(`${c.year}|`);
+    h.update(new Uint8Array(c.culture.buffer, c.culture.byteOffset, c.culture.byteLength));
+    h.update('|');
+    h.update(new Uint8Array(c.polity.buffer, c.polity.byteOffset, c.polity.byteLength));
+    h.update(';');
+  }
+  return h.digest('hex');
 }
 
 function logOf(log: { size: number; year: Float32Array; region: Int32Array; layer: Uint8Array; value: Int16Array; cause: Uint8Array }) {

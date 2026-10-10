@@ -71,7 +71,7 @@
 
 | 护栏 | 守什么 |
 | --- | --- |
-| `tests/sim-resume-order.test.ts`(011A 新增) | ①顺序差异真实存在(精确到事件序列,防止有人"以为一致"而写错契约)②结果一致性(ChangeLog 逐字段 + annals + 检查点 + 归属) |
+| `tests/sim-resume-order.test.ts`(011A 新增) | ①顺序差异真实存在(精确到事件序列,防止有人"以为一致"而写错契约)②结果一致性:ChangeLog 逐字段 + annals + **检查点逐个比 `year`/`polity`/`culture`** + 最终归属逐字节 —— 与 §1.2 的三样完全对齐 |
 | `tests/civ-sim.test.ts:231`、`civ-wars` / `civ-politics` / `civ-dynasty` / `civ-assimilation` / `civ-cities` / `civ-polities` / `civ-interventions` 里的 `expectResumeSame` | 多个切点(含"分裂 / 合并 / 复国 / 改朝换代 / 毁城重建 / 迁徙同化 / 干预前后"那一刻)的结果一致性 |
 | `scripts/probe-resume-order.ts` | 扩大扫描用(更多种子 / 切点 / 精细度;带干预、带地形大事的组合**尚未扫**) |
 | 21 组指纹 + `tests/regression-determinism.test.ts` | 一口气跑这条路径本身没被改动 |
