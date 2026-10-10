@@ -513,7 +513,7 @@ export const REWRITE_SYSTEM = [
   '',
   '## 规则',
   '1. 国家、城、州、民族、山河只能用材料里的编号(P3、C12、R45、E2、M7);作者说的名字对不上任何一个,写进 cannot,不要编。',
-  '2. from 是整数年份,要在那个国家存在的年份里(立国当年到亡国前一年),而且早于历史的最后一年。作者没说年份,就用材料开头写的默认年份;那一年这国还没立或已亡,挑一个合理的年份,在 why 里说。',
+  '2. from 是整数年份,要在那个国家存在的年份里(立国次年到亡国前一年;写成立国那年的会挪到次年),而且早于历史的最后一年。作者没说年份,就用材料开头写的默认年份;那一年这国还没立或已亡,挑一个合理的年份,在 why 里说。',
   '   例:"让它多撑三百年" → 从原本亡国前约 30 年起 protect,until = 原本亡国那年 + 300。',
   '3. 只做作者要的,不要额外加作者没提的事;一句话可以拆成几条修改。能用历史命令做到的,不要动地形。',
   '   同一次不要既改地形又下历史命令:地形一改历史整个重来,材料里的国家、城、年份就对不上了。作者两样都要时,这次只改地形,在 cannot 里说"地形改好后再说历史那部分"。',
@@ -885,9 +885,23 @@ class Checker {
     const P = civ.polities;
     // 没写年份 = 时间轴的年份;时间轴在最后一年(刚打开时就是)= 前一年(命令最晚从那一年起)
     const given = yearOf(o.from ?? o.year ?? o['年份']);
-    const from = given === null || given === civ.endYear ? defaultFrom(civ, given ?? this.ctx.year) : given;
+    const asked = given === null || given === civ.endYear ? defaultFrom(civ, given ?? this.ctx.year) : given;
+    // 立国那年下的命令挪到次年:命令在年初生效,立国那年的年初它还没立国,命令会落空(立国正好在年初那一刻也一样)
+    let late = '';
+    const firstYear = (v: unknown): number => {
+      const id = handleOf(v, 'P');
+      const p = id !== null ? P[id] : undefined;
+      if (!p || asked < Math.floor(p.founded) || asked > p.founded) return asked;
+      late = nameAt(p, p.founded);
+      return Math.floor(p.founded) + 1;
+    };
+    const from =
+      kind === 'found'
+        ? asked
+        : Math.max(firstYear(o.country ?? o.a ?? o.polity ?? o['国家']), kind === 'ally' || kind === 'declare' ? firstYear(o.other ?? o.b ?? o.target ?? o['对方']) : asked);
+    const movedNote = from !== asked ? `${late}第 ${asked} 年才立国,那年年初还不在,命令改从第 ${from} 年起` : undefined;
     const untilRaw = yearOf(o.until ?? o.to ?? o['截止']);
-    const fail = (text: string, problem: string) => ({ change: null, text, year: from, problem });
+    const fail = (text: string, problem: string) => ({ change: null, text, year: from, problem, ...(movedNote ? { where: movedNote } : {}) });
     const label = KIND_LABEL[kind];
     if (!civ.viable || !P.length) return fail(label, '这个世界没有文明');
     if (!(from >= 0 && from < civ.endYear)) return fail(label, `年份要在第 0—${civ.endYear - 1} 年之间`);
@@ -917,9 +931,12 @@ class Checker {
     };
     let v: Intervention;
     let text: string;
-    let where: string | undefined;
+    let where = movedNote;
     const untilOk = untilRaw !== null && untilRaw > from ? Math.min(untilRaw, 65535) : undefined;
     const untilText = untilOk !== undefined ? `(至第 ${untilOk} 年)` : '';
+    // 挪到次年以后截止年份不在开始之后(原本给的是一年期的命令):不能当成没给截止、变成一直有效
+    if (movedNote && untilRaw !== null && untilRaw > asked && untilRaw <= from && (kind === 'protect' || kind === 'halt' || kind === 'ally'))
+      return fail(label, `命令最早从第 ${from} 年起,到第 ${untilRaw} 年为止一年也管不到`);
     if (kind === 'found') {
       const R = regionOf();
       if (typeof R === 'string') return fail('立国', R);

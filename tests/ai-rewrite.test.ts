@@ -32,6 +32,7 @@ import {
   cleanWish,
   mergeRewrite,
   mockRewrite,
+  nameAt,
   parseRewrite,
   rewriteMaterial,
   rewriteRequest,
@@ -291,6 +292,46 @@ describe('改写 · 核对 AI 的回复', () => {
     bad({ op: 'ally', country: `P${big}` }, /没说是哪个对方国家/);
     bad({ op: 'nuke', country: `P${big}` }, /没有这种修改/);
     expect(one({ op: 'nuke' }).text).toBe('「nuke」');
+  });
+
+  it('立国那年下的命令:挪到次年起(那年年初还没立国,命令会落空),写明原因,推演里真的生效;更早的照样不合格', () => {
+    // 年中立国、立国前后还有别的国家在(拿来结盟)
+    const before = (q: Civ['polities'][number], y: number) => q.founded < y - 1 && (q.ended === undefined || q.ended > y + 2);
+    const p = civ.polities.find(
+      (q) => !Number.isInteger(q.founded) && (q.ended === undefined || q.ended > q.founded + 5) && civ.polities.some((o) => before(o, Math.floor(q.founded))),
+    )!;
+    const y = Math.floor(p.founded);
+    const a = polityKey(civ, p.id);
+    const x = one({ op: 'protect', country: `P${p.id}`, from: y });
+    expect(x.problem).toBeUndefined();
+    expect(x.year).toBe(y + 1);
+    expect(x.change).toEqual({ kind: 'intervention', v: { kind: 'protect', a, from: y + 1 } });
+    expect(x.where).toBe(`${nameAt(p, p.founded)}第 ${y} 年才立国,那年年初还不在,命令改从第 ${y + 1} 年起`);
+    // 推演里生效了:记了一条干预(立国那年的年初下,一条都不记)
+    const fired = (v: Intervention) => generateCiv(world, { interventions: [v] }).annals.some((e) => e.kind === 'intervene' && e.war === 0);
+    expect(fired({ kind: 'protect', a, from: y + 1 })).toBe(true);
+    expect(fired({ kind: 'protect', a, from: y })).toBe(false);
+    // 不在立国那年:年份不动,也不写原因
+    const later = one({ op: 'protect', country: `P${p.id}`, from: y + 2 });
+    expect([later.year, later.where]).toEqual([y + 2, undefined]);
+    // 更早:还没立国;说的立国年份比给的晚,不再自相矛盾
+    const early = one({ op: 'protect', country: `P${p.id}`, from: y - 1 });
+    expect(early.change).toBeNull();
+    expect(early.problem).toBe(`第 ${y - 1} 年${nameAt(p, y - 1)}还没立国(第 ${y} 年立国)`);
+    // 结盟的对方在那年立国:也挪
+    const old = civ.polities.find((q) => before(q, y))!;
+    expect(one({ op: 'ally', country: `P${old.id}`, other: `P${p.id}`, from: y }).change).toEqual({
+      kind: 'intervention',
+      v: { kind: 'ally', a: polityKey(civ, old.id), b: a, from: y + 1 },
+    });
+    // 原本是一年期的(截止 = 立国次年):挪过以后管不到一年,不合格,不能变成一直有效
+    const short = one({ op: 'protect', country: `P${p.id}`, from: y, until: y + 1 });
+    expect(short.change).toBeNull();
+    expect(short.problem).toBe(`命令最早从第 ${y + 1} 年起,到第 ${y + 1} 年为止一年也管不到`);
+    expect(one({ op: 'protect', country: `P${p.id}`, from: y, until: y + 2 }).change).toEqual({ kind: 'intervention', v: { kind: 'protect', a, from: y + 1, until: y + 2 } });
+    // 正好在年初立国(年份是整数):那一刻命令也比立国早,同样挪到次年
+    const whole = { ...civ, polities: civ.polities.map((q) => (q.id === p.id ? { ...q, founded: y } : q)) };
+    expect(one({ op: 'protect', country: `P${p.id}`, from: y }, ctx(EMPTY, Y, whole)).year).toBe(y + 1);
   });
 
   it('结盟、宣战:宣战要那一年接壤', () => {

@@ -17,6 +17,7 @@ import type { Intervention, TerrainOp, Upheaval } from '../gen/edits';
 import type { SketchEdit } from '../gen/sketch';
 import type { UpheavalPreview } from '../gen/civ/upheaval';
 import type { RasterPatch } from '../gen/rasterPatch';
+import type { NameMix } from '../gen/names';
 
 /**
  * 一组参数 + 草图(没改地形的星球)的扩张节拍(gen/civ 的 planetTempo;null = 长不出文明),key = 这颗星球在线程里的键。
@@ -43,6 +44,8 @@ export interface CivInput {
   sketch?: SketchEdit;
   /** 地形大事(不给 = 没有) */
   upheavals?: Upheaval[];
+  /** 整个世界的地名风格(gen/edits.ts 的 WorldEdits.nameMix;不给 = 自动) */
+  names?: NameMix;
   tempo?: TempoNote;
   /** 主线程已经有了的主图补丁("上一段的键>这一段的键");没给的才在后台铺 */
   have?: string[];

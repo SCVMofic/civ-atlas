@@ -5,7 +5,8 @@
  *
  * - 工具参数是模型写的 JSON 原文,可能不合法:解析不了 / 没有这个工具 / 执行时抛错,都把原因作为这一步的结果交回模型,
  *   让它自己改了再调,不中断整个循环
- * - 最后一轮 toolChoice = 'none':不许再调工具,只能回话(防止来回调个没完)
+ * - 最后一轮 toolChoice = 'none':不许再调工具,只能回话(防止来回调个没完);之前调过工具的,先补一句 FINAL_NUDGE 让它直接下结论
+ *   (光关掉工具,模型常常照样写一句"让我再查……:"就停了)
  * - 停下(signal)= 抛 AiError('aborted');已经做完的步骤在 onEvent 里已经报过了
  */
 import { aiChat } from '../client';
@@ -73,7 +74,7 @@ export interface AgentOutcome {
   steps: AgentStep[];
   /** 整段对话(含每一轮的工具调用和结果) */
   messages: AiMessage[];
-  /** done = 模型自己说完了;rounds = 到了轮数上限,最后一轮被要求直接回话 */
+  /** done = 模型自己说完了;rounds = 到了轮数上限,最后一轮被要求直接回话(只问一轮的不算) */
   end: 'done' | 'rounds';
   rounds: number;
   usage: AiUsage;
@@ -83,6 +84,17 @@ export interface AgentOutcome {
 export const AGENT_MAX_ROUNDS = 10;
 /** 一步的结果交回模型时最长多少字(太长的截断,免得一轮把上下文吃光) */
 export const TOOL_RESULT_MAX = 6000;
+/** 最后一轮之前补的话:不能再调工具了,直接说结论 */
+export const FINAL_NUDGE =
+  '查询和试推演的次数用完了,这一轮不能再调工具。不要再说要查什么、试什么,直接告诉作者结论:' +
+  '能做到就说怎么改(列了确认单的照确认单说),做不到就说做不到和原因。';
+
+/** 收尾的话像没说完:最后一段以冒号结尾,或者是"让我再查……""我先看看……"这类还要接着做的话 */
+export function looksUnfinished(text: string): boolean {
+  const tail = text.trim().split(/\n+/).pop()?.trim() ?? '';
+  if (!tail) return false;
+  return /[:：]$/.test(tail) || /^(让我|我再|我先|我来|接下来我|下面我)(再|也|先|来)?(查|试|看|检查|确认|尝试|调)/.test(tail);
+}
 
 /** 参数原文 → 对象;空串 = {};不是 JSON 对象 = null */
 export function parseToolArgs(raw: string): Record<string, unknown> | null {
@@ -114,6 +126,7 @@ export async function runAgent(req: AgentRequest): Promise<AgentOutcome> {
     if (req.signal?.aborted) throw aborted();
     emit({ type: 'round', round });
     const last = round === max - 1;
+    if (last && round > 0 && defs.length) msgs.push({ role: 'user', content: FINAL_NUDGE });
     const r = await aiChat(
       {
         feature: req.feature,
@@ -135,7 +148,7 @@ export async function runAgent(req: AgentRequest): Promise<AgentOutcome> {
       // 一步没做、一句没说:算空回复(做过步骤再收尾不说话可以,结果已经摆在面板上)
       if (!steps.length && !r.text.trim()) throw new AiError('bad-response', 'AI 返回了空回复,请再试一次');
       msgs.push({ role: 'assistant', content: r.text });
-      return { text: r.text.trim(), steps, messages: msgs, end: calls.length ? 'rounds' : 'done', rounds: round + 1, usage };
+      return { text: r.text.trim(), steps, messages: msgs, end: calls.length || (last && round > 0) ? 'rounds' : 'done', rounds: round + 1, usage };
     }
     // 调用编号重复(或者空)就换成不重的:每条工具结果要对上各自那次调用
     const used = new Set(msgs.flatMap((m) => m.toolCalls?.map((c) => c.id) ?? []));

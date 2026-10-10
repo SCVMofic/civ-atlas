@@ -40,6 +40,7 @@ import type { InterventionModel } from './interventions';
 import type { CivEra, NamePins, Regions, UpheavalFact } from './types';
 import type { TerrainOp } from '../edits';
 import { buildReligion } from './religion';
+import { cleanMix, type NameMix } from '../names';
 
 export * from './types';
 
@@ -89,6 +90,8 @@ export function planetTempo(params: WorldParams, civ: Partial<CivParams> = {}, s
 export function generateCiv(world: World, params: Partial<CivParams> = {}, progress: Progress = () => {}): Civ {
   const p: CivParams = { ...DEFAULT_CIV_PARAMS, ...params };
   const n = world.mesh.n;
+  /** 整个世界的地名风格(清理过;自动 = undefined) */
+  const mix = cleanMix(p.names);
 
   progress('宜居度', 0);
   const habitat = computeHabitat(world);
@@ -127,18 +130,28 @@ export function generateCiv(world: World, params: Partial<CivParams> = {}, progr
   const pins: NamePins | undefined = ups.length ? { regionNames: [], polities: new Map(), settlements: new Map() } : undefined;
   const eras: CivEra[] = [];
   const facts: UpheavalFact[] = [];
+  /** 配了地名风格时,各段的起名等推完再做(要按真正推演结束时各民族住的地方凑份数,见下面 nameEra) */
+  const later: ((areas: Int16Array) => void)[] = [];
   for (let k = 0; k < ups.length; k++) {
     const u = ups[k];
     const before = fin.regions;
+    const eraWorld = fin.world;
+    const eraHabitat = fin.habitat;
     // 名字、配色、这一段的地名和道路:照"没有这件大事、照原样推到底"的那份历史(大事之前和它一模一样,见 NamePins)
-    const same = partialCiv(fin.sim, fin.model!, fin.pm!, fin.habitat, before, world.params.seed, iv);
-    const branch = CivSim.fromCiv(fin.world, same, same.interventions ?? []);
+    const same = partialCiv(fin.sim, fin.model!, fin.pm!, eraHabitat, before, world.params.seed, iv);
+    const branch = CivSim.fromCiv(eraWorld, same, same.interventions ?? []);
     branch.run(p.endYear);
-    const b = pinNames(pins!, fin.world, branch, k ? ups[k - 1].year : -Infinity, u.year, k === 0);
-    const eraPlaces = findPlaces(fin.world, before, { cultures: b.cultures, culture: b.culture });
-    if (k) keepPlaceNames(fin.world, eras[k - 1].places, eraPlaces);
-    const eraRoutes = buildRoutes(fin.world, fin.habitat, before, { cities: b.settlements.length ? routeCities(b.settlements, b.polities, p.endYear) : undefined });
-    eras.push({ until: u.year, habitat: fin.habitat, regions: before, places: eraPlaces, routes: eraRoutes });
+    // 起名只读这一段的分支,不影响之后的推演。配了地名风格时份数按真正的结局凑(areas = 推演结束时的民族归属):
+    // 照"没有大事"的那份结局凑的话,大事淹掉、改变了大片地方以后,实际的占比会和配的差出一截
+    const nameEra = (areas?: Int16Array) => {
+      const b = pinNames(pins!, eraWorld, branch, k ? ups[k - 1].year : -Infinity, u.year, k === 0, mix, areas);
+      const eraPlaces = findPlaces(eraWorld, before, { cultures: b.cultures, culture: b.culture, names: mix });
+      if (k) keepPlaceNames(eraWorld, eras[k - 1].places, eraPlaces);
+      const eraRoutes = buildRoutes(eraWorld, eraHabitat, before, { cities: b.settlements.length ? routeCities(b.settlements, b.polities, p.endYear) : undefined });
+      eras.push({ until: u.year, habitat: eraHabitat, regions: before, places: eraPlaces, routes: eraRoutes });
+    };
+    if (mix) later.push(nameEra);
+    else nameEra();
     // 新地形:州沿用编号,只改变了的地方;比出这件大事改了什么
     const h1 = computeHabitat(u.world);
     const r1 = reshapeRegions(u.world, h1, before, { regionArea: p.regionArea });
@@ -162,7 +175,8 @@ export function generateCiv(world: World, params: Partial<CivParams> = {}, progr
   }
   const { log, checkpoints, culture, polity, annals } = fin.sim.result();
   progress('起名', 0.92);
-  if (fin.model) finishCultures(fin.world, fin.model, culture, checkpoints, pins);
+  for (const f of later) f(culture);
+  if (fin.model) finishCultures(fin.world, fin.model, culture, checkpoints, pins, mix);
   if (fin.pm) finishPolities(fin.world, fin.pm, polity, pins);
   const cultures: Culture[] = fin.model?.cultures ?? [];
   const settlements: Settlement[] = fin.pm?.settlements ?? []; // ③ polities.ts
@@ -171,7 +185,7 @@ export function generateCiv(world: World, params: Partial<CivParams> = {}, progr
   const routes: Route[] = viable
     ? buildRoutes(fin.world, fin.habitat, fin.regions, { progress, cities: settlements.length ? routeCities(settlements, polities, p.endYear) : undefined })
     : [];
-  const places: Place[] = findPlaces(fin.world, fin.regions, { cultures, culture }); // ⑤ places.ts(山海湖岛是地理,不看 viable)
+  const places: Place[] = findPlaces(fin.world, fin.regions, { cultures, culture, names: mix }); // ⑤ places.ts(山海湖岛是地理,不看 viable)
   // 地形大事以后:同一处地方沿用大事以前的地名
   if (eras.length) keepPlaceNames(fin.world, eras[eras.length - 1].places, places);
   const people = buildPeople({ seed: world.params.seed, endYear: p.endYear, polities, settlements, cultures, annals }); // ⑥ people.ts
@@ -197,6 +211,7 @@ export function generateCiv(world: World, params: Partial<CivParams> = {}, progr
     ...(iv ? { interventions: iv.list.slice() } : {}),
     people,
     ...(facts.length ? { upheavals: facts, eras } : {}),
+    ...(mix ? { names: mix } : {}),
   };
   // ⑦ religion.ts:要整份 civ(按年份查归属、国都、君主;地形大事以前按那时的州)
   if (viable && cultures.length) civ.religion = buildReligion(fin.world, civ);
@@ -213,16 +228,17 @@ function kindsOf(ops: readonly TerrainOp[]): UpheavalFact['kinds'] {
 /**
  * 一段推演(到第 k 件大事的前一刻)不套这件大事、照原样推到底(branch)以后起的名字、配色:
  * 年份在 [from, to) 里出现的国家、城、王朝,和这一段里新划出来的州,钉住(第一段还钉住民族)。
- * 返回 branch 起好名的民族、城、国家和推到底的民族归属(这一段的地名、道路照它定)
+ * 返回 branch 起好名的民族、城、国家和推到底的民族归属(这一段的地名、道路照它定)。
+ * areas = 配了地名风格时按份数凑占比看的民族归属(真正推演结束时的;只在第一段用)
  */
-function pinNames(pins: NamePins, world: World, branch: CivSim, from: number, to: number, first: boolean) {
+function pinNames(pins: NamePins, world: World, branch: CivSim, from: number, to: number, first: boolean, mix?: NameMix, areas?: Int16Array) {
   const res = branch.result();
   const bm = cultureModelOf(branch)!;
   const bpm = polityModelOf(branch)!;
   bpm.cultures = bm.cultures; // 接着推时两层各复制了一份民族表:起城名、国名要用起好名的那份
-  finishCultures(world, bm, res.culture, res.checkpoints, first ? undefined : pins);
+  finishCultures(world, bm, res.culture, res.checkpoints, first ? undefined : pins, mix, areas);
   finishPolities(world, bpm, res.polity, pins);
-  if (first) pins.cultures = bm.cultures.map((c) => ({ name: c.name, style: c.style, color: [...c.color] as [number, number, number] }));
+  if (first) pins.cultures = bm.cultures.map((c) => ({ name: c.name, style: c.style, ...(c.autoStyle ? { autoStyle: c.autoStyle } : {}), color: [...c.color] as [number, number, number] }));
   const names = bm.terrain.regions.name ?? [];
   for (let r = 0; r < bm.terrain.regions.count; r++) if (pins.regionNames[r] === undefined) pins.regionNames[r] = names[r] ?? '';
   for (const q of bpm.polities) {

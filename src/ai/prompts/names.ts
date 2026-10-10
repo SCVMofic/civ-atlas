@@ -17,6 +17,7 @@ import type { Civ, Place, Polity } from '../../gen/civ/types';
 import type { Raster } from '../../gen/raster';
 import { BIOMES } from '../../gen/biomes';
 import { mulberry32, subSeed } from '../../gen/util';
+import { pickStyle, type NameMix } from '../../gen/names/mix';
 import { KIND_INFO, cultureLabel, regionLabel, regionNamed } from '../../gen/civ/display';
 import {
   SETTLEMENT_RANKS,
@@ -184,10 +185,13 @@ export function styleGuide(id: string | undefined): StyleGuide | null {
   return STYLE_GUIDES.find((s) => s.id === id) ?? null;
 }
 
-/** 没人住的地方的地名用的"这个世界通行的语感"(和 gen/civ/places.ts 的 worldNameStyle 一样,单测核对) */
-export function worldStyleId(seed: number): string {
+/**
+ * 没人住的地方的地名用的"这个世界通行的语感"(和 gen/civ/places.ts 的 worldNameStyle 一样,单测核对);
+ * names = 整个世界的地名风格(Civ.names),按份数挑
+ */
+export function worldStyleId(seed: number, names?: NameMix): string {
   const rng = mulberry32(subSeed(seed, 'civ-places-style'));
-  return STYLE_GUIDES[Math.floor(rng() * STYLE_GUIDES.length)].id;
+  return pickStyle(names, rng());
 }
 
 // ---------------------------------------------------------------------------
@@ -274,7 +278,7 @@ export function nameInfo(civ: Civ, t: NameTarget): NameInfo | null {
     case 'place': {
       const p = civ.places[t.id];
       if (!p) return null;
-      const style = p.kind === 'sea' ? SEA_GUIDE : styleGuide(p.culture >= 0 ? cus[p.culture]?.style : worldStyleId(civ.seed));
+      const style = p.kind === 'sea' ? SEA_GUIDE : styleGuide(p.culture >= 0 ? cus[p.culture]?.style : worldStyleId(civ.seed, civ.names));
       return { key: placeKeyOf(civ, t.id), keyKind: 'place', eastern: style?.family === 'eastern', kindLabel: placeKindLabel(p), name: p.name, shown: p.name, style };
     }
     case 'culture': {
@@ -921,8 +925,8 @@ export function nameMaterial(civ: Civ, t: NameTarget, raster?: Raster | null): N
       civ.places,
       t.id,
       (x) => x.name,
-      (x) => x.kind === p.kind && (p.kind === 'sea' || (x.culture >= 0 ? styleOf(x.culture) : worldStyleId(civ.seed)) === st),
-      (x) => x.kind !== 'sea' && p.kind !== 'sea' && (x.culture >= 0 ? styleOf(x.culture) : worldStyleId(civ.seed)) === st,
+      (x) => x.kind === p.kind && (p.kind === 'sea' || (x.culture >= 0 ? styleOf(x.culture) : worldStyleId(civ.seed, civ.names)) === st),
+      (x) => x.kind !== 'sea' && p.kind !== 'sea' && (x.culture >= 0 ? styleOf(x.culture) : worldStyleId(civ.seed, civ.names)) === st,
       8,
     );
   } else if (t.kind === 'culture') {

@@ -1,0 +1,170 @@
+name: 发布旧版网站
+
+# 生成器升级(GENERATOR_VERSION 加一,同一个种子得到的世界变样)以后,把上一版网站原样留在
+# https://atlas.gerdor.top/v<上一版的 GENERATOR_VERSION>/ 下面:存成文件的世界拿到那里打开,还是当时的样子。
+#
+# 在 Actions 页面手动跑,填上一版最后一个提交(main 上的,完整 40 位提交号);目录名取那个提交里的 GENERATOR_VERSION。
+# 构建前把浏览器存储的名字(localStorage 的键、IndexedDB 的库名)都换成带版本号的(wenming-ditu: → wenming-ditu-v9: 这样):
+# 新旧两版在同一个网址下面,共用存储的话,旧版会把新版存的世界按旧格式重存,新版才有的内容就丢了。
+# 构建时带上 VITE_OLD_SITE(第几版)和 VITE_OLD_UNTIL(新版上线那天,不填 = 跑这个流程的那天,北京时间):
+# 页面左上角写明是旧版、哪天以前的,带回最新版的链接(src/ui/oldSite.ts);最新版里点「看原样」交过来的世界,不说成别人分享的。
+# 除此以外页面和当时一模一样,只多一行不让搜索引擎收录(免得搜到旧版)。
+# 不带 VITE_AI_SERVER:旧版没有登录和云同步,不会把旧格式的存档传进账号。
+# 发布用的密钥和主站一样(见 deploy.yml 开头);只往那个子目录传文件,不删任何东西,主站的发布也不会删它。
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: '上一版最后一个提交(main 上的完整 40 位提交号)'
+        required: true
+        type: string
+      until:
+        description: '新版上线那天(2026-10-11 这样;不填 = 今天,北京时间)'
+        required: false
+        type: string
+
+# 和主站的发布排同一个队,不同时往服务器传
+concurrency:
+  group: deploy-site
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: 构建并发布旧版
+    if: github.repository == 'guaner-334/civ-atlas'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: site
+      url: https://atlas.gerdor.top/${{ steps.check.outputs.dir }}/
+    steps:
+      - name: 检查提交号和日期
+        id: input
+        env:
+          COMMIT: ${{ inputs.commit }}
+          UNTIL: ${{ inputs.until }}
+        run: |
+          if ! [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "要填完整的 40 位提交号" >&2
+            exit 1
+          fi
+          if [ -z "$UNTIL" ]; then UNTIL=$(TZ=Asia/Shanghai date +%F); fi
+          if ! [[ "$UNTIL" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || ! date -d "$UNTIL" >/dev/null 2>&1; then
+            echo "日期写成 2026-10-11 这样" >&2
+            exit 1
+          fi
+          echo "until=$UNTIL" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit }}
+          fetch-depth: 0
+      - name: 确认是 main 上的提交,定目录名
+        id: check
+        env:
+          COMMIT: ${{ inputs.commit }}
+        run: |
+          if ! git merge-base --is-ancestor "$COMMIT" origin/main; then
+            echo "$COMMIT 不是 main 上的提交" >&2
+            exit 1
+          fi
+          ver=$(sed -nE 's/^export const GENERATOR_VERSION = ([0-9]+);.*/\1/p' src/gen/edits.ts)
+          if ! [[ "$ver" =~ ^[0-9]+$ ]]; then
+            echo "src/gen/edits.ts 里没找到 GENERATOR_VERSION" >&2
+            exit 1
+          fi
+          echo "dir=v$ver" >> "$GITHUB_OUTPUT"
+          echo "ver=$ver" >> "$GITHUB_OUTPUT"
+          echo "旧版:${COMMIT::7},生成器第 $ver 版 → /v$ver/,${{ steps.input.outputs.until }} 以前" >> "$GITHUB_STEP_SUMMARY"
+      - name: 换成旧版自己的浏览器存储
+        env:
+          DIR: ${{ steps.check.outputs.dir }}
+        run: |
+          files=$(grep -rlE "wenming-ditu:|civ-atlas:|'civ-atlas-ai'" src || true)
+          if [ -z "$files" ]; then
+            echo "没找到浏览器存储的名字,存储的写法可能改过,先看一眼代码" >&2
+            exit 1
+          fi
+          sed -i -E "s/wenming-ditu:/wenming-ditu-$DIR:/g; s/civ-atlas:/civ-atlas-$DIR:/g; s/'civ-atlas-ai'/'civ-atlas-$DIR-ai'/g" $files
+          git diff --stat
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: 生产构建
+        env:
+          VITE_AI_SERVER: ''
+          VITE_OLD_SITE: ${{ steps.check.outputs.ver }}
+          VITE_OLD_UNTIL: ${{ steps.input.outputs.until }}
+        run: pnpm build
+      - name: 确认没有和主站共用的存储名,加上不收录、补结尾斜杠
+        env:
+          DIR: ${{ steps.check.outputs.dir }}
+        run: |
+          if grep -rlE "wenming-ditu:|civ-atlas:|[\"'\`]civ-atlas-ai[\"'\`]" dist; then
+            echo "构建结果里还有和主站共用的存储名(见上面的文件)" >&2
+            exit 1
+          fi
+          sed -i 's#<meta charset="UTF-8" />#&\n    <meta name="robots" content="noindex" />#' dist/index.html
+          grep -q 'name="robots" content="noindex"' dist/index.html
+          # 有人手敲 /v9(少了结尾的斜杠)时,有的服务器配置直接给出页面、不跳到 /v9/,页面里的相对路径就指错了地方:先补上斜杠再加载
+          sed -i "s#<meta charset=\"UTF-8\" />#&\n    <script>if (location.pathname.endsWith('/$DIR')) location.replace(location.pathname + '/' + location.search + location.hash);</script>#" dist/index.html
+          grep -qF "endsWith('/$DIR')" dist/index.html
+      - name: 准备 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_DEST: ${{ secrets.DEPLOY_DEST }}
+        run: |
+          if [ -z "$DEPLOY_SSH_KEY" ] || [ -z "$DEPLOY_KNOWN_HOSTS" ] || [ -z "$DEPLOY_DEST" ]; then
+            echo "没配发布用的密钥(见 deploy.yml 开头),不发布" >&2
+            exit 1
+          fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+      # 和主站一样:先传带哈希的文件,最后才换页面本身;握手超时就重试
+      - name: 上传
+        env:
+          DEPLOY_DEST: ${{ secrets.DEPLOY_DEST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DIR: ${{ steps.check.outputs.dir }}
+        run: |
+          export RSYNC_RSH="ssh -p ${DEPLOY_PORT:-22} -i $HOME/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20 -o ServerAliveInterval=10"
+          retry() { local n; for n in 1 2 3 4; do "$@" && return 0; echo "第 $n 次失败,10 秒后重试" >&2; sleep 10; done; return 1; }
+          # DEPLOY_DEST 形如 user@host:(网站目录)或 user@host:/某个目录
+          dest="${DEPLOY_DEST%/}"
+          case "$dest" in
+            *:) dest="$dest$DIR/" ;;
+            *) dest="$dest/$DIR/" ;;
+          esac
+          retry rsync -rltz --chmod=D755,F644 --exclude='/*.html' dist/ "$dest"
+          retry rsync -ltz --chmod=F644 dist/*.html "$dest"
+          echo "已发布 → https://atlas.gerdor.top/$DIR/" >> "$GITHUB_STEP_SUMMARY"
+      # 打开看看:页面和它引用的主程序都拿得到(网站在别处有拦截时这一步可能失败,不影响已经传上去的文件)
+      - name: 检查网址能打开
+        continue-on-error: true
+        env:
+          DIR: ${{ steps.check.outputs.dir }}
+        run: |
+          url="https://atlas.gerdor.top/$DIR/"
+          js=$(grep -oE '\./assets/index-[A-Za-z0-9_-]+\.js' dist/index.html | head -n1)
+          html=$(curl -fsSL --retry 3 --max-time 30 "$url")
+          if [ -z "$js" ] || ! printf '%s' "$html" | grep -qF "$js"; then
+            echo "$url 拿到的不是刚传上去的旧版页面" >&2
+            exit 1
+          fi
+          type=$(curl -fsS --retry 3 --max-time 60 -o /dev/null -w '%{content_type}' "$url${js#./}")
+          if [[ "$type" != *javascript* ]]; then
+            echo "主程序的类型是「$type」,浏览器不会运行它" >&2
+            exit 1
+          fi
+          echo "$url 能打开(主程序 ${js#./assets/},$type)" >> "$GITHUB_STEP_SUMMARY"
+          # 少了结尾斜杠的网址:服务器跳到 /v9/(3xx)或直接给出页面(200,页面自己补斜杠)都行,记下是哪种
+          nos=$(curl -sS -o /dev/null --max-time 30 -w '%{http_code} %{redirect_url}' "https://atlas.gerdor.top/$DIR" || true)
+          echo "https://atlas.gerdor.top/$DIR(不带斜杠):$nos" | tee -a "$GITHUB_STEP_SUMMARY"

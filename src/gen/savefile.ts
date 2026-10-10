@@ -36,6 +36,8 @@
  * - edits.characters(可选):作者的人物(characters.ts),`[{ "id": 1, "name": "林小满", "color": "red", "born": 2490, "died": 2561,
  *   "birthplace": "settlement:c4567#0", "life": [{ "year": 2506, "text": "随军西征", "where": "region:c8123" }] }]`;
  *   没有人物时不写这个字段。读档时逐个过 cleanCharacter,格式不对的跳过
+ * - edits.nameMix(可选):整个世界的地名风格,每种语感占几份(edits.ts 文件头"地名风格"),`{ "xianxia": 6, "central": 4 }`;自动时不写。
+ *   读档时过 cleanMix:认不出的语感(比如以后的新语感)、不是正数的份数去掉,提示一句;一份都不剩就按自动
  * - view:看这个世界用的投影和中央经线(`{ "projection": "robinson", "center": 120 }`,可选)。
  *   投影名原样存(render/projection.ts 的 ProjectionId,或 "globe"),认不出的由界面当成等距圆柱;
  *   旧存档没有这个字段 = 等距圆柱、中央经线 0°
@@ -46,6 +48,7 @@
  * 纯计算,不碰 DOM(Node 里可测)。
  */
 import { DEFAULT_PARAMS, type World, type WorldParams } from './world';
+import { cleanMix, sameMix } from './names/mix';
 import { GENERATOR_CHANGES, GENERATOR_VERSION, MARKS_MAX, MARK_REGIONS_TOTAL, NAME_MAX, aiNameKeys, cleanMark, freeMarkId, type AiNameMark, type AuthorMark, type GeneratorChange, type Intervention, type TerrainOp, type Upheaval, type WorldEdits } from './edits';
 import { TERRAIN_MAX_OPS, UPHEAVALS_MAX, UPHEAVAL_KINDS, UPHEAVAL_OPS_MAX, cleanTerrainOp, cleanUpheaval } from './terrainEdits';
 import { SKETCH_MAX_STROKES, cleanSketch, cleanSketchStroke, type SketchEdit } from './sketch';
@@ -53,7 +56,10 @@ import { decodeFlag } from './civ/flags';
 import { CHARACTERS_MAX, cleanCharacters, type AuthorCharacter } from './characters';
 
 export const SAVE_APP = '文明与地图';
-/** 存档格式版本 */
+/**
+ * 存档格式版本。加一时注意:旧版网站读不了更新格式的存档,打开文件、分享链接读进来的存档已经换成了现在的格式,
+ * 「看原样」(ui/oldSite.ts)交给旧版网站之前要换回它认得的格式
+ */
 export const SAVE_FORMAT = 1;
 
 export interface SaveFile {
@@ -266,7 +272,7 @@ export function worldKey(params: WorldParams): string {
   return PARAM_KEYS.map((k) => `${k}=${params[k] ?? DEFAULT_PARAMS[k]}`).join('&');
 }
 
-/** 改了几处:改名条数 + 干预条数 + 地形修改处数 + 草图(画了算一处)+ 地形大事件数 + 作者标记个数 + 改过的旗面数 + 作者的人物个数 */
+/** 改了几处:改名条数 + 干预条数 + 地形修改处数 + 草图(画了算一处)+ 地形大事件数 + 作者标记个数 + 改过的旗面数 + 作者的人物个数 + 地名风格(配了算一处)*/
 export function editCount(edits: WorldEdits): number {
   return (
     Object.keys(edits.names).length +
@@ -276,7 +282,8 @@ export function editCount(edits: WorldEdits): number {
     (edits.upheavals?.length ?? 0) +
     (edits.marks?.length ?? 0) +
     Object.keys(edits.flags ?? {}).length +
-    (edits.characters?.length ?? 0)
+    (edits.characters?.length ?? 0) +
+    (edits.nameMix ? 1 : 0)
   );
 }
 
@@ -334,6 +341,8 @@ export function makeSave(
   if (edits.marks?.length) save.edits.marks = edits.marks.map(copyMark);
   if (edits.flags && Object.keys(edits.flags).length) save.edits.flags = { ...edits.flags };
   if (edits.characters?.length) save.edits.characters = edits.characters.map((c) => JSON.parse(JSON.stringify(c)) as AuthorCharacter);
+  const mix = cleanMix(edits.nameMix);
+  if (mix) save.edits.nameMix = { ...mix };
   const t = cleanTitle(title);
   if (t) save.title = t;
   const v = view ? cleanView(view) : null;
@@ -550,6 +559,11 @@ export function parseSave(text: string): ParseResult {
   if (E.characters !== undefined && !Array.isArray(E.characters)) count.dropped++;
   if (count.dropped) warnings.push(`有 ${count.dropped} 个作者的人物格式不对,已跳过`);
   if (count.over) warnings.push(`作者的人物最多 ${CHARACTERS_MAX} 个,多出来的 ${count.over} 个没有读进来`);
+  // 地名风格:认不出的语感、不对的份数去掉
+  const nameMix = cleanMix(E.nameMix);
+  const rawMix = isObj(E.nameMix) ? E.nameMix : null;
+  if (E.nameMix !== undefined && (!rawMix || Object.keys(rawMix).some((k) => nameMix?.[k] !== rawMix[k])))
+    warnings.push(nameMix ? '地名风格里有认不出来的语感或份数,已去掉' : '地名风格认不出来,按自动起名');
   const note = versionNote(generator, terrain.length > 0 || !!sketch);
   if (note) warnings.splice(noteAt, 0, note);
 
@@ -569,6 +583,7 @@ export function parseSave(text: string): ParseResult {
       ...(marks.length ? { marks } : {}),
       ...(Object.keys(flags).length ? { flags } : {}),
       ...(characters.length ? { characters } : {}),
+      ...(nameMix ? { nameMix } : {}),
     },
     check: typeof raw.check === 'string' ? raw.check.slice(0, 64) : '',
     savedAt: typeof raw.savedAt === 'string' && !Number.isNaN(Date.parse(raw.savedAt)) ? raw.savedAt : '',
@@ -821,6 +836,11 @@ export function editsLost(local: SaveFile, incoming: SaveFile): number {
     // AI 起名的记号跟着改名走,丢没丢已经按改名算过了
     if (k === 'aiNames') continue;
     const iv = I[k];
+    // 地名风格整个算一处
+    if (k === 'nameMix') {
+      if (!sameMix(lv, iv)) n++;
+      continue;
+    }
     if (Array.isArray(lv)) {
       const has = new Set(Array.isArray(iv) ? iv.map((x) => JSON.stringify(x)) : []);
       n += lv.filter((x) => !has.has(JSON.stringify(x))).length;

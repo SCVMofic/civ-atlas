@@ -17,7 +17,7 @@
  * 撞名(和已经起好的名字重复)时换这个键的下一个候选,谁先占按锚点地块编号从小到大 —— 也和生成先后无关。
  * 种子来自 subSeed(seed, 'civ-names…'),其余随机数用 keyed。
  */
-import { createNamer, createPersonNamer, NAME_STYLES, type GeneratedName, type Namer, type PersonNamer } from '../names';
+import { createNamer, createPersonNamer, mixStyles, NAME_STYLES, type GeneratedName, type NameMix, type Namer, type PersonNamer } from '../names';
 import { Biome } from '../biomes';
 import type { Culture, CultureKind, Polity, Settlement } from './types';
 import { polityRootAt } from './growth';
@@ -52,18 +52,45 @@ const W_RAND = 1;
 const W_USED = 1.4;
 const W_NEIGHBOR = 3;
 
+/** 这个民族和这种语感对不对口:类型、气温、群落(不含随机) */
+function affinity(id: string, kind: CultureKind, t: number, biome: number): number {
+  const a = AFFINITY[id];
+  if (!a) return 0;
+  let s = 0;
+  if (a.kinds.includes(kind)) s += W_KIND;
+  const [lo, hi] = a.t;
+  s += W_TEMP * (t < lo ? Math.max(-1, 1 - (lo - t) / 6) : t > hi ? Math.max(-1, 1 - (t - hi) / 6) : 1);
+  if (a.biomes.includes(biome)) s += W_BIOME;
+  return s;
+}
+
 /**
  * 给每个民族挑一种语感(写进 culture.style)。neighbors[c] = 和 c 接壤的民族;
  * terrain.temp[州] = 治所年均温,terrain.regions.biome[州] = 主导群落。
  * 位置锚(发源州的治所地块)决定两件事:随机的那一份按它取;谁先挑按它从小到大(相邻的民族错开、全世界少重复都看先挑的)——
  * 改地形后别处多一个、少一个民族,远处民族的语感尽量不跟着变。
+ * mix = 整个世界的地名风格(names/index.ts 的 NameMix):不给 = 自动(上面的挑法);给了按份数配(assignByMix),要 owner(州 → 推演结束时的民族)
  */
 export function assignStyles(
   cultures: Culture[],
   neighbors: Set<number>[],
   terrain: { temp: Float32Array; regions: { biome: Uint8Array; seat: ArrayLike<number> } },
   base: number,
+  mix?: NameMix,
+  owner?: ArrayLike<number>,
 ): void {
+  if (mix && owner) return assignByMix(cultures, neighbors, terrain, base, mix, owner);
+  autoStyles(cultures, neighbors, terrain, base).forEach((st, c) => (cultures[c].style = st));
+}
+
+/** 自动的挑法(见 assignStyles):返回每个民族挑到的语感,不写进 culture */
+function autoStyles(
+  cultures: Culture[],
+  neighbors: Set<number>[],
+  terrain: { temp: Float32Array; regions: { biome: Uint8Array; seat: ArrayLike<number> } },
+  base: number,
+): string[] {
+  const out = new Array<string>(cultures.length).fill(NAME_STYLES[0].id);
   const used = new Map<string, number>();
   const seat = terrain.regions.seat;
   // 按发源州的治所地块从小到大挑(和生成先后、编号无关;改地形后别处多一个、少一个民族,这里的先后照旧)
@@ -76,26 +103,158 @@ export function assignStyles(
     let best = NAME_STYLES[0].id;
     let bestScore = -Infinity;
     NAME_STYLES.forEach((st, i) => {
-      const a = AFFINITY[st.id];
-      let s = 0;
-      if (a) {
-        if (a.kinds.includes(cu.kind)) s += W_KIND;
-        const [lo, hi] = a.t;
-        s += W_TEMP * (t < lo ? Math.max(-1, 1 - (lo - t) / 6) : t > hi ? Math.max(-1, 1 - (t - hi) / 6) : 1);
-        if (a.biomes.includes(biome)) s += W_BIOME;
-      }
+      let s = affinity(st.id, cu.kind, t, biome);
       s += W_RAND * keyed(base, seat[cu.hearth], i);
-      for (const o of neighbors[cu.id]) if (done.has(o) && cultures[o].style === st.id) s -= W_NEIGHBOR;
+      for (const o of neighbors[cu.id]) if (done.has(o) && out[o] === st.id) s -= W_NEIGHBOR;
       s -= W_USED * (used.get(st.id) ?? 0);
       if (s > bestScore) {
         bestScore = s;
         best = st.id;
       }
     });
-    cu.style = best;
+    out[cu.id] = best;
     done.add(cu.id);
     used.set(best, (used.get(best) ?? 0) + 1);
   }
+  return out;
+}
+
+/**
+ * 按份数配:占比每差 1 个百分点扣多少分(各语感的差加起来;中式、音译两大类的差另算一份 —— 看地图时最先看出来的是中式占几成);
+ * 配了份数的语感一个活着的民族都没分到,扣多少分
+ */
+const W_SHARE = 0.6;
+const W_FAMILY = 1;
+const W_MISSING = 4;
+/** 活着的民族够分(不比配了份数的语感少)时,每种都得有活着的民族用上:差一种扣这么多(比别的加起来都大,等于硬条件) */
+const W_COVER = 1000;
+/** 和自动时挑的一样,加多少分:份数凑得差不多时,尽量只换必须换的民族(只把沙海调成 0 份,别的民族照旧) */
+const W_KEEP = 4;
+/** 挪一挪 / 换一换最多试几轮(民族十来个,通常三五轮就停) */
+const MIX_ROUNDS = 60;
+
+/**
+ * 按份数配语感:只在有份的几种里挑;每种语感占的地方(推演结束时各民族住的州数)尽量接近份数的比例,
+ * 同时照顾对口(和自动一样的类型、气温、群落 + 随机)、相邻的民族错开;活着的民族够分时,配了份数的语感每种都有民族用上
+ * (只配一两份的也是:哪怕一个民族占的地方比份数多,也比配了却一个都没有好)。
+ * 先按住的地方从大到小一个个挑,再反复试"把一个民族换成别的语感 / 两个民族对换",总分变好就换,直到换不动。
+ * 份数是全世界一起凑的,改地形后远处民族的语感可能跟着变(自动时不会)。
+ * 已经消亡的民族不占地方,只看对口和相邻(它们的名字出现在历史里)。
+ */
+function assignByMix(
+  cultures: Culture[],
+  neighbors: Set<number>[],
+  terrain: { temp: Float32Array; regions: { biome: Uint8Array; seat: ArrayLike<number> } },
+  base: number,
+  mix: NameMix,
+  owner: ArrayLike<number>,
+): void {
+  const n = cultures.length;
+  if (!n) return;
+  const styles = mixStyles(mix);
+  const k = styles.length;
+  const area = new Array<number>(n).fill(0);
+  for (let r = 0; r < owner.length; r++) if (owner[r] >= 0 && owner[r] < n) area[owner[r]]++;
+  const total = area.reduce((a, x) => a + x, 0);
+  const shares = styles.reduce((a, x) => a + x.share, 0);
+  /** 每种语感该占的州数;中式该占几个州 */
+  const target = styles.map((x) => (x.share / shares) * total);
+  const eastern = styles.map((x) => x.style.family === 'eastern');
+  const eastTarget = target.reduce((a, x, j) => (eastern[j] ? a + x : a), 0);
+  const seat = terrain.regions.seat;
+  /** fit[c][j] = 民族 c 用第 j 种的对口分(含随机,随机按语感在全部语感里的序号取,和自动时一样;和自动时挑的一样再加分) */
+  const auto = autoStyles(cultures, neighbors, terrain, base);
+  const fit = cultures.map((cu, c) => {
+    const t = terrain.temp[cu.hearth];
+    const biome = terrain.regions.biome[cu.hearth];
+    return styles.map((x) => affinity(x.style.id, cu.kind, t, biome) + W_RAND * keyed(base, seat[cu.hearth], x.i) + (x.style.id === auto[c] ? W_KEEP : 0));
+  });
+  const living = area.filter((a) => a > 0).length;
+  /** 配了份数、应当有民族用上的语感有几种(活着的民族不够分时,只要求用满) */
+  const want = Math.min(k, living);
+  const wMissing = living >= k ? W_COVER : W_MISSING;
+  const pct = total > 0 ? 100 / total : 0;
+  const pick = new Array<number>(n).fill(-1);
+
+  /** 总分(越小越好) */
+  const cost = (): number => {
+    const filled = new Array<number>(k).fill(0);
+    const seen = new Array<boolean>(k).fill(false);
+    let s = 0;
+    for (let c = 0; c < n; c++) {
+      const j = pick[c];
+      if (j < 0) continue;
+      filled[j] += area[c];
+      if (area[c] > 0) seen[j] = true;
+      s -= fit[c][j];
+      for (const o of neighbors[c]) if (o > c && pick[o] === j) s += W_NEIGHBOR;
+    }
+    let east = 0;
+    for (let j = 0; j < k; j++) {
+      s += W_SHARE * Math.abs(filled[j] - target[j]) * pct;
+      if (eastern[j]) east += filled[j];
+    }
+    s += W_FAMILY * 2 * Math.abs(east - eastTarget) * pct;
+    s += wMissing * Math.max(0, want - seen.filter(Boolean).length);
+    return s;
+  };
+
+  // 先挑:住的地方大的先挑(同样大按发源州的治所地块),每个挑当下总分最好的
+  const order = cultures.map((_, c) => c).sort((a, b) => area[b] - area[a] || seat[cultures[a].hearth] - seat[cultures[b].hearth] || a - b);
+  for (const c of order) {
+    let best = 0;
+    let bestCost = Infinity;
+    for (let j = 0; j < k; j++) {
+      pick[c] = j;
+      const v = cost();
+      if (v < bestCost - 1e-9) {
+        bestCost = v;
+        best = j;
+      }
+    }
+    pick[c] = best;
+  }
+  // 再挪:试每个民族换成别的语感、每两个民族对换,取总分降得最多的那一步,直到降不动
+  let now = cost();
+  for (let round = 0; round < MIX_ROUNDS && k > 1; round++) {
+    let gain = 1e-9;
+    let move: [number, number, number] | null = null; // [民族, 语感] 或 [民族 a, -1, 民族 b](对换)
+    for (const c of order) {
+      const was = pick[c];
+      for (let j = 0; j < k; j++) {
+        if (j === was) continue;
+        pick[c] = j;
+        const d = now - cost();
+        if (d > gain) {
+          gain = d;
+          move = [c, j, -1];
+        }
+      }
+      pick[c] = was;
+    }
+    for (let x = 0; x < order.length; x++) {
+      for (let y = x + 1; y < order.length; y++) {
+        const a = order[x];
+        const b = order[y];
+        if (pick[a] === pick[b]) continue;
+        [pick[a], pick[b]] = [pick[b], pick[a]];
+        const d = now - cost();
+        if (d > gain) {
+          gain = d;
+          move = [a, -1, b];
+        }
+        [pick[a], pick[b]] = [pick[b], pick[a]];
+      }
+    }
+    if (!move) break;
+    if (move[1] >= 0) pick[move[0]] = move[1];
+    else [pick[move[0]], pick[move[2]]] = [pick[move[2]], pick[move[0]]];
+    now = cost();
+  }
+  cultures.forEach((cu, c) => {
+    cu.style = styles[pick[c]].style.id;
+    cu.autoStyle = auto[c];
+  });
 }
 
 /** 当国名没问题、加上"族"字就成了日常词的("丈夫国" → "丈夫族"),不拿来当族名 */

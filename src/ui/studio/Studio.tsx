@@ -4,13 +4,14 @@
  *   中间     这颗星球(StudioScene + PlanetGL):进来先放开场 —— 平面实景上板块漂移 → 卷成地球仪 → 自转;
  *            拖动转动。改地形时摊成平面,换成平常的平面地图和改地形覆盖层(App 按 studioStore 的 flat 摆地图)
  *   左边     设定(电脑贴着窗口左边、能收起;手机是底部卡片,平时只露种子和「创建世界」):
- *            种子 + 换一颗、世界参数、重看星球形成;地形(改地形工具、让助手改);名字;底部「创建世界」
+ *            种子 + 换一颗、世界参数、重看星球形成;地形(改地形工具、让助手改);名字(世界名、地名风格);底部「创建世界」。
+ *            点「地名风格」左边换成配比例的那一页(NameMixPage.tsx),左上返回;手机上卡片里换页、拉到最高
  *   右边     样式(不用历史的 7 种,带缩略图)和投影(地球仪 + 5 种平面);手机上是右上两个按钮,点开是列表
  *   助手     「让助手改」打开:电脑上换掉右边的样式和投影,手机上是盖住设定卡片的底部卡片(上面留出星球)。
  *            新建时助手只改地形、回答问题;列出来还没执行的改地形在星球上用白色虚线圈出来、编号和清单对上,
  *            星球先转过去正对着那一块。执行后和手动改地形一样重新生成、星球淡入新样子(不放提示条)
  *   底下     开场时的年代、进度、跳过;放完以后一句提示
- *   确认框   点「创建世界」先列出建好以后不能改的三样;确认后两边面板滑出、星球展开成平常的地图、淡出
+ *   确认框   点「创建世界」先列出建好以后不能改的四样(种子、世界参数、地形、地名风格);确认后两边面板滑出、星球展开成平常的地图、淡出
  *
  * 开场、换一颗的漂移只是演示(按这颗星球自己的板块往回转再放回),不改生成的世界。
  * 没有 WebGL(或显卡丢了):不放开场,中间一直是平常的平面地图;样式照样能换。
@@ -44,6 +45,8 @@ import { getMapCenter } from '../mapWrap';
 import { landCenterLon, plateRotations, plateTexels, type PlanetProjection } from '../../render/planet';
 import { PlanetGL } from './planetGL';
 import { StudioScene, type SceneHooks, type StillPose } from './scene';
+import { NameMixPage } from './NameMixPage';
+import { mixSummary } from '../nameMix';
 import { drawPlanetLabels } from './planetLabels';
 import { drawPlanetMarks, marksCenter, type PlanetMark } from './planetMarks';
 import { getCivFeed, subscribeCivFeed } from '../CivLayer';
@@ -164,6 +167,10 @@ export function Studio(p: StudioProps) {
   const [flatShown, setFlatShown] = useState(false);
   // 手机:底部卡片拉开没有、右上哪个列表开着、卡片多高
   const [sheetFull, setSheetFull] = useState(false);
+  /** 左边换成「地名风格」页(手机上卡片里换页) */
+  const [namesPage, setNamesPage] = useState(false);
+  /** 地名风格页还没交的份数(见 NameMixPage 的 flush) */
+  const mixFlush = useRef<(() => void) | null>(null);
   const [drawer, setDrawer] = useState<'style' | 'proj' | null>(null);
   const [sheetH, setSheetH] = useState(0);
   const [vw, setVw] = useState(() => (typeof innerWidth === 'number' ? innerWidth : 1280));
@@ -570,14 +577,22 @@ export function Studio(p: StudioProps) {
   };
   const askCreate = () => {
     commitName();
+    mixFlush.current?.();
     setDrawer(null);
     setConfirm(true);
+  };
+  /** 「地名风格」页:手机上卡片拉到最高 */
+  const openNames = () => {
+    setDrawer(null);
+    if (p.phone) setSheetFull(true);
+    setNamesPage(true);
   };
   /** 「让助手改」:改地形工具开着就先收起(星球卷回来,圈画在星球上) */
   const askAssistant = () => {
     setDrawer(null);
     setTip(false);
     setSheetFull(false);
+    if (p.phone) setNamesPage(false);
     if (tool.on) setTerrainTool({ on: false });
     openAssistant();
   };
@@ -821,11 +836,22 @@ export function Studio(p: StudioProps) {
       onBlur={commitName}
     />
   );
+  const mixRow = (
+    <button className="sb-row" data-act="name-mix" onClick={openNames}>
+      <span className="sb-row-main">
+        <b>地名风格</b>
+      </span>
+      <span className="sb-row-side">{mixSummary(edits.nameMix)}</span>
+      <Icon name="chevron" size={14} className="sb-chev" />
+    </button>
+  );
   const createBtn = (
     <button className="nw-create" data-act="create-world" disabled={p.busy || !p.ready || busyIntro || out > 0 || importing} onClick={askCreate}>
       {base ? '创建新世界' : '创建世界'}
     </button>
   );
+  const mixShown = namesPage && !tool.on && !peek;
+  const mixPage = mixShown && <NameMixPage backLabel={heading} onBack={() => setNamesPage(false)} civ={p.raw} busy={p.busy} ready={p.ready} phone={p.phone} flush={mixFlush} />;
   const settings = tool.on ? (
     <TerrainPanel disabled={p.busy} phone={p.phone} />
   ) : (
@@ -869,6 +895,7 @@ export function Studio(p: StudioProps) {
             <span>名字</span>
           </div>
           {nameField}
+          <div className="sb-group">{mixRow}</div>
         </section>
       )}
     </>
@@ -876,37 +903,54 @@ export function Studio(p: StudioProps) {
 
   const left = p.phone ? (
     <section ref={sheetRef} className={`st-sheet nw-sheet nw-card${peek ? ' peek' : ''}${tool.on ? ' tools' : ''}`} aria-label="新建世界" onPointerDown={stop} onClick={stop} onWheel={stop}>
-      <button className="st-grip" data-act="new-sheet" aria-label={sheetFull ? '收起' : '展开'} aria-expanded={sheetFull} onClick={() => setSheetFull((f) => !f)}>
+      <button
+        className="st-grip"
+        data-act="new-sheet"
+        aria-label={sheetFull ? '收起' : '展开'}
+        aria-expanded={sheetFull}
+        onClick={() => {
+          if (sheetFull) setNamesPage(false);
+          setSheetFull(!sheetFull);
+        }}
+      >
         <i aria-hidden="true" />
       </button>
-      <div className="st-in nw-body">
-        {!tool.on && backLink}
-        {!tool.on && (
-          <div className="nw-title-row">
-            <div className="nw-title">{heading}</div>
-            {moreMenu}
-          </div>
+      <div className={`st-in nw-body${mixShown ? ' nm-page' : ''}`}>
+        {mixPage || (
+          <>
+            {!tool.on && backLink}
+            {!tool.on && (
+              <div className="nw-title-row">
+                <div className="nw-title">{heading}</div>
+                {moreMenu}
+              </div>
+            )}
+            {!peek && !tool.on && <div className="nw-intro">{intro0}</div>}
+            {settings}
+          </>
         )}
-        {!peek && !tool.on && <div className="nw-intro">{intro0}</div>}
-        {settings}
       </div>
       {!tool.on && <footer className="st-foot">{createBtn}</footer>}
     </section>
   ) : (
     <aside className="st-left nw-card" aria-label="新建世界" onPointerDown={stop} onDoubleClick={stop} onClick={stop}>
-      <div className="st-in nw-body">
-        <div className="st-top">
-          {backLink ?? <span />}
-          <button className="sb-collapse" data-act="side-collapse" aria-label="收起侧栏" data-tip="收起侧栏" onClick={() => setCollapsed(true)}>
-            <Icon name="sidebar" size={19} />
-          </button>
-        </div>
-        <div className="nw-title-row">
-          <div className="nw-title">{heading}</div>
-          {moreMenu}
-        </div>
-        {!tool.on && <div className="nw-intro">{intro0}</div>}
-        {settings}
+      <div className={`st-in nw-body${mixShown ? ' nm-page' : ''}`}>
+        {mixPage || (
+          <>
+            <div className="st-top">
+              {backLink ?? <span />}
+              <button className="sb-collapse" data-act="side-collapse" aria-label="收起侧栏" data-tip="收起侧栏" onClick={() => setCollapsed(true)}>
+                <Icon name="sidebar" size={19} />
+              </button>
+            </div>
+            <div className="nw-title-row">
+              <div className="nw-title">{heading}</div>
+              {moreMenu}
+            </div>
+            {!tool.on && <div className="nw-intro">{intro0}</div>}
+            {settings}
+          </>
+        )}
       </div>
       <footer className="st-foot">{createBtn}</footer>
     </aside>
@@ -1048,7 +1092,7 @@ export function Studio(p: StudioProps) {
               <Icon name="lock" size={22} />
             </div>
             <h2 id="st-dlg-title">{nameNow ? `创建「${nameNow}」？` : '创建这个世界？'}</h2>
-            <p>创建以后，这颗星球的样子就定下来了，下面三样不能再改：</p>
+            <p>创建以后，这颗星球的样子就定下来了，下面四样不能再改：</p>
             <div className="sb-group">
               <div className="sb-row static">
                 <Icon name="lock" size={16} className="sb-ico" />
@@ -1075,8 +1119,17 @@ export function Studio(p: StudioProps) {
                   {terrainSide(edits, '没改过')}
                 </span>
               </div>
+              <div className="sb-row static">
+                <Icon name="lock" size={16} className="sb-ico" />
+                <span className="sb-row-main">
+                  <b>地名风格</b>
+                </span>
+                <span className="sb-row-side" data-confirm="name-mix">
+                  {mixSummary(edits.nameMix)}
+                </span>
+              </div>
             </div>
-            <p className="st-dlg-note">世界名、国名地名和历史，创建以后随时能改。</p>
+            <p className="st-dlg-note">世界名、历史和一个个国名地名，创建以后随时能改。</p>
             <div className="st-dlg-btns">
               <button className="st-b2" data-act="confirm-back" onClick={() => setConfirm(false)}>
                 再改改

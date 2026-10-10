@@ -1170,7 +1170,7 @@ await page.waitForFunction(() => (window as any).__wf?.ready, null, { timeout: 6
 }
 
 // 第一次来(什么都没存):先到「我的世界」,中间一颗星球、一段话、「新建世界」;点了进新建界面;
-// 「创建世界」先弹确认框(列出种子、世界参数、地形三样不能再改),「再改改」关掉、「确认创建」才建好,回到平常的世界页面(浅色、政区)
+// 「创建世界」先弹确认框(列出种子、世界参数、地形、地名风格四样不能再改),「再改改」关掉、「确认创建」才建好,回到平常的世界页面(浅色、政区)
 {
   const fctx = await browser.newContext({ viewport: { width: 1400, height: 820 } });
   const fp = await fctx.newPage();
@@ -1200,7 +1200,7 @@ await page.waitForFunction(() => (window as any).__wf?.ready, null, { timeout: 6
   if (!empty || !globe || !emptyText.includes('还没有世界') || !emptyText.includes('打造一颗独属于你的星球')) errs.push(`第一次来:我的世界空着时不是"星球 + 一段话 + 新建世界"(${emptyText})`);
   if (!emptyText.includes('无需登录') || !emptyText.includes('不主张任何权利')) errs.push(`第一次来:「或者打开存档文件」下面没有"无需登录……归你"那行小字(${emptyText})`);
   if (!/[?&]new=1/.test(draftUrl)) errs.push(`第一次来:点「新建世界」没进新建(${draftUrl})`);
-  if (!['不能再改', '种子', '世界参数', '地形'].every((w) => dlg.includes(w)) || !new RegExp(`[?&]seed=${dlgSeed}(&|$)`).test(draftUrl)) errs.push(`新建界面:确认框没列出不能再改的三样(${dlg},种子 ${dlgSeed})`);
+  if (!['不能再改', '种子', '世界参数', '地形', '地名风格'].every((w) => dlg.includes(w)) || !new RegExp(`[?&]seed=${dlgSeed}(&|$)`).test(draftUrl)) errs.push(`新建界面:确认框没列出不能再改的四样(${dlg},种子 ${dlgSeed})`);
   if (!closed || !stillDraft) errs.push('新建界面:确认框点「再改改」没有关掉、回到新建');
   if (!/[?&]w=w/.test(worldUrl) || theme !== 'light' || layer !== 'political') errs.push(`新建界面:确认创建后没回到平常的世界页面(${worldUrl},${theme},${layer})`);
   await fctx.close();
@@ -2177,6 +2177,65 @@ for (const style of ['realistic', 'fantasy']) {
   await ready();
   const draftBar = new URLSearchParams(await p.evaluate(() => location.search));
   if (draftBar.get('new') !== '1' || draftBar.has('gen')) errs.push(`版本号:新建中的网址不该带 gen(${draftBar})`);
+  await ctx.close();
+}
+
+// 看原样:有旧网站的那一版(FIRST_OLD_SITE 起、比现在旧)建的世界,打开时提示条上有「看原样」,存档菜单里也有一行;
+// 点了开一个新页面到 /v<那一版>/,带 own=1 和整份存档(# 后面)。没有旧网站的更早版本、现在这一版建的都没有
+{
+  const { FIRST_OLD_SITE } = await import('../src/ui/oldSite');
+  const ctx = await browser.newContext({ viewport: { width: 1400, height: 820 } });
+  const p = await ctx.newPage();
+  p.on('pageerror', (e) => errs.push(`看原样:${e.message}`));
+  /** 浏览器里存一个第 gen 版建的「青岚纪」,从网址打开它:提示条、存档菜单里各有没有「看原样」 */
+  const openGen = async (gen: number) => {
+    const id = `wsee${gen}x0001`;
+    const save = {
+      app: '文明与地图',
+      format: 1,
+      generator: gen,
+      seed: 7,
+      params: { seed: 7, cells: 12000, landFraction: 0.3, plates: 30, mountains: 1, temperature: 0, rainfall: 1 },
+      edits: { names: {}, interventions: [], terrain: [] },
+      title: '青岚纪',
+      savedAt: '2026-10-08T12:00:00.000Z',
+    };
+    await p.goto(`${dev.url}/`);
+    await p.evaluate(([k, v]) => (localStorage.clear(), localStorage.setItem(k, v)), [`wenming-ditu:world:${id}`, JSON.stringify(save)]);
+    await p.goto(`${dev.url}/?w=${id}`);
+    await p.waitForFunction(() => (window as any).__wf?.ready, null, { timeout: 60000 });
+    const note = await toastText(p, 'save', 8000);
+    const inToast = await p.locator('.toast [data-act=see-original]').count();
+    await p.click('.save-btn');
+    const inMenu = await p.locator('.save-menu [data-act=see-original]').count();
+    await p.click('.save-btn');
+    return { note, inToast, inMenu };
+  };
+  const gens = [...new Set([GENERATOR_VERSION - 1, FIRST_OLD_SITE - 1, GENERATOR_VERSION])];
+  for (const gen of gens) {
+    const has = gen >= FIRST_OLD_SITE && gen < GENERATOR_VERSION;
+    const r = await openGen(gen);
+    let popup = '';
+    if (has && r.inToast) {
+      // 旧网站在开发服务器上没有:给一页空白顶上,只看新页面去了哪个网址
+      await ctx.route(/\/v\d+\/(\?|$)/, (route) => route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>旧版</title>' }));
+      const pop = ctx.waitForEvent('page', { timeout: 10000 });
+      await p.click('.toast [data-act=see-original]');
+      const np = await pop.catch(() => null);
+      if (np) {
+        await np.waitForURL(/\/v\d+\//, { timeout: 10000, waitUntil: 'commit' }).catch(() => {});
+        popup = np.url();
+        await np.close();
+      }
+      await ctx.unroute(/\/v\d+\/(\?|$)/);
+    }
+    console.log(`看原样:第 ${gen} 版的世界,提示「${r.note}」,提示条上的按钮 ${r.inToast},存档菜单里 ${r.inMenu}${popup ? `,新页面 ${popup.slice(0, 80)}…` : ''}`);
+    if (has !== (r.inToast === 1) || has !== (r.inMenu === 1)) errs.push(`看原样:第 ${gen} 版的世界${has ? '应该' : '不该'}有「看原样」(提示条 ${r.inToast},存档菜单 ${r.inMenu})`);
+    if (has) {
+      const u = popup ? new URL(popup) : null;
+      if (!u || !u.pathname.endsWith(`/v${gen}/`) || u.searchParams.get('own') !== '1' || !u.hash.startsWith('#share=')) errs.push(`看原样:新页面的网址不对(${popup})`);
+    }
+  }
   await ctx.close();
 }
 
