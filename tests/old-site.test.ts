@@ -39,6 +39,17 @@ describe('旧版网站', () => {
     for (const v of [undefined, '', '2026-13-01', '2026-10-00', '10-11', '2026/10/11', 20261011]) expect(untilText(v)).toBe('');
   });
 
+  it('新版上线那天按真日历校验:二月月底、闰年、大小月都认得出', () => {
+    // 认得出的:各月末、闰年 2 月 29
+    expect(untilText('2026-01-31')).toBe('1 月 31 日');
+    expect(untilText('2026-12-31')).toBe('12 月 31 日');
+    expect(untilText('2026-04-30')).toBe('4 月 30 日');
+    expect(untilText('2026-02-28')).toBe('2 月 28 日');
+    expect(untilText('2024-02-29')).toBe('2 月 29 日'); // 闰年
+    // 日历上不存在的那天:2 月 31、平年 2 月 29、小月 31
+    for (const v of ['2026-02-31', '2026-02-29', '2026-04-31', '2026-06-31', '2026-09-31', '2026-11-31', '2100-02-29']) expect(untilText(v)).toBe('');
+  });
+
   it('旧网站上"来自更新的版本"不说刷新页面;别的句子、最新版上原样', () => {
     expect(oldSiteNote(NEWER_NOTE, 9)).toBe(OLD_NEWER_NOTE);
     expect(oldSiteNote(NEWER_NOTE, null)).toBe(NEWER_NOTE);

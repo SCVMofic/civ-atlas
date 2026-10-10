@@ -24,13 +24,19 @@ export function oldSiteVersion(v: unknown): number | null {
   return typeof v === 'string' && /^[1-9]\d{0,5}$/.test(v) ? Number(v) : null;
 }
 
-/** 新版上线那天(2026-10-11)→「10 月 11 日」;没给、格式不对 = '' */
+/** 新版上线那天(2026-10-11)→「10 月 11 日」;没给、格式不对、日历上不存在的那天 = '' */
 export function untilText(v: unknown): string {
-  const m = typeof v === 'string' ? /^\d{4}-(\d{2})-(\d{2})$/.exec(v) : null;
+  const m = typeof v === 'string' ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(v) : null;
   if (!m) return '';
-  const mo = Number(m[1]);
-  const d = Number(m[2]);
-  return mo >= 1 && mo <= 12 && d >= 1 && d <= 31 ? `${mo} 月 ${d} 日` : '';
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  // 真日历校验:按 UTC 构造再对回年月日,2 月 31 日、平年 2 月 29 日这类不存在的那天对不上就被否掉
+  // (先拿 2000 年构造,避免 Date 把 0–99 年当成 19xx;再 setUTCFullYear 换成真年份)
+  const dt = new Date(Date.UTC(2000, mo - 1, d));
+  dt.setUTCFullYear(y);
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return '';
+  return `${mo} 月 ${d} 日`;
 }
 
 /** 这是第几版的旧网站;最新版 = null */
