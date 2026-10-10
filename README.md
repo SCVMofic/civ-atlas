@@ -1,4 +1,9 @@
-# 文明与地图
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/readme/logo-dark.svg">
+    <img src=".github/readme/logo-light.svg" alt="文明与地图" height="48">
+  </picture>
+</h1>
 
 在浏览器里生成一颗完整的星球并推演它的历史：用板块运动、河流侵蚀、气候与洋流算出地形和生态，再模拟民族、国家、战争与王朝更替，得到可以编辑的地图和编年史。面向小说、设定集、跑团等原创世界观创作。
 
