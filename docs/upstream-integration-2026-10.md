@@ -168,11 +168,22 @@ TASK-011A 已探明、已记录、已接受的现象(`docs/simulation-event-audi
 5. **指纹基线未更新**:本次默认路径指纹与基线一致,故 `docs/baseline-fingerprint.json`
    无需重存。若日后上游改动默认命名,应重新评审而非直接改基线。
 
-## 8. 交付状态(2026-10-10 更新)
+## 8. 交付状态(2026-10-10 最终)
 
-分支 `integration/upstream-2026-10` 已推送到 `origin`(SCVMofic/civ-atlas),并开了一个
-以 `main` 为目标的 PR(https://github.com/SCVMofic/civ-atlas/pull/1)。**未合并进 `main`、
-未部署**。PR 仅用于取得 GitHub CI 记录与审查。
+集成分支 `integration/upstream-2026-10` 已推送到 `origin`(SCVMofic/civ-atlas),PR
+https://github.com/SCVMofic/civ-atlas/pull/1 已 **合并进 `main`**:
+
+- PR head:`10c11d1`(分支内合并提交 `4aceabc` 是本地历史,不是 main 上的那个)
+- **最终合并提交:`37dd1ea`**(`Merge pull request #1 from SCVMofic/integration/upstream-2026-10`,
+  父 = `0e3bda7` 旧 main 与 `10c11d1` 集成分支)
+- 合并前 CI(run `38053812769`,commit `10c11d1`):类型检查/单测/压力/构建 ✅、画面回归 ✅、
+  冒烟 ✅、schedule 专用任务跳过 —— **四项全绿**
+- **未部署**:`main` 的 push 触发了「发布网站」workflow,但被
+  `if: github.repository == 'guaner-334/civ-atlas'` 拦下,结果 `skipped`(见 §6)
+
+注意区分两个合并提交:`4aceabc` 是集成分支内部把 `upstream/main` 并进来的提交(本地历史);
+`37dd1ea` 才是落在 `main` 上的最终合并提交。
+
 
 ## 9. 验收复跑(第二轮,2026-10-10)
 
