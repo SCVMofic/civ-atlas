@@ -58,7 +58,9 @@ export function warOutcomes(civ: Civ): WarOutcome[] {
   const hit = cache.get(civ);
   if (hit) return hit;
   const A = civ.annals;
-  // 议和时划界割让的 conquer:peace.region = 紧挨在它前面的那么多条同 war 的 conquer(types.ts 的字段表)
+  // 议和时划界割让的 conquer:peace.region = 紧挨在它前面、连着记的那几条同 war 的 conquer(types.ts 的字段表)。
+  // 只往回看**连着**的一段:碰到别的史事(别的种类、别的战争)就停,免得把更早打下来的州错认成割地;
+  // 条数最多 e.region 条。和 render 侧 warSpans 的判定同一套规则(测试里交叉核对)。
   const cession = new Set<number>();
   for (let i = 0; i < A.length; i++) {
     const e = A[i];
@@ -66,7 +68,7 @@ export function warOutcomes(civ: Civ): WarOutcome[] {
     let n = 0;
     for (let j = i - 1; j >= 0 && n < e.region; j--) {
       const c = A[j];
-      if (c.kind !== 'conquer' || c.war !== e.war) continue;
+      if (c.kind !== 'conquer' || c.war !== e.war) break;
       cession.add(j);
       n++;
     }

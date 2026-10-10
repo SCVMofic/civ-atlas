@@ -73,6 +73,26 @@ describe('战争结果的结构化视图', () => {
     expect(quiet).toBeGreaterThan(0);
   });
 
+  it('议和割地只认紧挨在 peace 前面的那几条 conquer:中间隔了别的史事就不再往前找', () => {
+    const mk = (year: number, kind: Annal['kind'], a: number, b: number, region: number, war: number): Annal => ({ year, kind, a, b, region, settlement: -1, war });
+    // 早先真打下来的州(10)、中间隔一条别的史事(battle)、连着 peace 的一条真割让(12);
+    // peace 的 region 故意写 2(本该两条连着)。反向扫描若跳过中间那条继续往前找,会把 10 错认成割地。
+    const fake = {
+      annals: [
+        mk(1, 'war', 0, 1, -1, 0),
+        mk(2, 'conquer', 0, 1, 10, 0),
+        mk(3, 'battle', 1, 0, 11, 0),
+        mk(4, 'conquer', 1, 0, 12, 0),
+        mk(4, 'peace', 0, 1, 2, 0),
+      ],
+      polities: [{ id: 0 }, { id: 1 }],
+    } as unknown as Civ;
+    const w = warOutcomes(fake)[0];
+    expect(w.ceded.map((t) => t.region)).toEqual([12]);
+    expect(w.conquered.map((t) => t.region)).toEqual([10]);
+    expect(w.ceded[0]).toMatchObject({ year: 4, region: 12, from: 0, to: 1 });
+  });
+
   it('亡国:这场仗里亡了哪个国家记进 fallen,与 fall 史事一致', () => {
     const A = civ.annals;
     let checked = 0;
