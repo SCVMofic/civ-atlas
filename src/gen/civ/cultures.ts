@@ -29,6 +29,7 @@ import { fpow, keyed, subSeed } from './rand';
 import { refCellArea, refSpacing } from './geo';
 import { quantize, Ev, type CivSim } from './sim';
 import { assignStyles, nameCultures } from './naming';
+import type { NameMix } from '../names';
 import { KIND_INFO } from './display';
 
 // ---- 调参(以截图效果为准) ----
@@ -807,9 +808,11 @@ function assignColors(cultures: Culture[], nb: Set<number>[], base: number, seat
 /**
  * 推演结束后:配色、分语感、起族名和州名(州名按最终疆域起,写进 regions.name)。
  * 配色、语感要和接壤的民族错开:阶段 3 有了同化与迁徙,接壤关系会变、有的民族会消亡,
- * 所以"接壤"取结束时和各检查点(每百年一份)的并集 —— 回放到哪一年,相邻的民族颜色都错得开
+ * 所以"接壤"取结束时和各检查点(每百年一份)的并集 —— 回放到哪一年,相邻的民族颜色都错得开。
+ * names = 整个世界的地名风格(CivParams.names,清理过的;自动 = 不给);areas = 按份数凑占比时看的民族归属(不给 = owner;
+ * 地形大事:起名照没有大事的那份历史,份数却要按真正推演结束时各民族住的地方凑)
  */
-export function finishCultures(world: World, m: CultureModel, owner: Int16Array, history: readonly Checkpoint[] = [], pins?: NamePins): void {
+export function finishCultures(world: World, m: CultureModel, owner: Int16Array, history: readonly Checkpoint[] = [], pins?: NamePins, names?: NameMix, areas?: Int16Array): void {
   const seed = world.params.seed;
   const reg = m.terrain.regions;
   const pinned = pins?.cultures;
@@ -818,12 +821,13 @@ export function finishCultures(world: World, m: CultureModel, owner: Int16Array,
     m.cultures.forEach((cu, i) => {
       cu.color = [...pinned[i].color] as [number, number, number];
       cu.style = pinned[i].style;
+      if (pinned[i].autoStyle) cu.autoStyle = pinned[i].autoStyle;
     });
   } else {
     const nb = cultureNeighbors(reg, owner, m.cultures.length);
     for (const cp of history) cultureNeighbors(reg, cp.culture, m.cultures.length).forEach((set, i) => set.forEach((o) => nb[i].add(o)));
     assignColors(m.cultures, nb, subSeed(seed, 'civ-culture-color'), reg.seat);
-    assignStyles(m.cultures, nb, m.terrain, subSeed(seed, 'civ-culture-style'));
+    assignStyles(m.cultures, nb, m.terrain, subSeed(seed, 'civ-culture-style'), names, areas ?? owner);
   }
   reg.name = nameCultures(seed, m.cultures, owner, reg.seat);
   if (pinned) m.cultures.forEach((cu, i) => (cu.name = pinned[i].name));

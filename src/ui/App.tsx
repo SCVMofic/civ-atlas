@@ -121,8 +121,10 @@ import {
   type Intervention,
   type TerrainOp,
   type Upheaval,
+  type WorldEdits,
 } from '../gen/edits';
 import { sameTerrain, sameUpheavals } from '../gen/terrainEdits';
+import { sameMix, type NameMix } from '../gen/names/mix';
 import type { RasterPatch } from '../gen/rasterPatch';
 import { baseRegions, civAtEra, dropComposed, eraData, eraIndex, eraMapsOf, eraReady, eraShown, patchKey, reuseRegions, useEraIndex, withHistory } from './eras';
 import { sameSketch, type SketchEdit } from '../gen/sketch';
@@ -145,6 +147,7 @@ import {
   worldCheck,
   worldKey,
   type ParseResult,
+  type SaveFile,
   type SaveOrigin,
   type SaveView,
 } from '../gen/savefile';
@@ -154,6 +157,7 @@ import {
   attachWorld,
   briefError,
   briefWarning,
+  currentOriginal,
   currentWorld,
   deleteWorld,
   detachWorld,
@@ -215,7 +219,9 @@ import { useAiOn } from '../ai/client';
 import { Globe, getGlobeOn, setGlobeOn, useGlobeOn, type GlobeApi } from './Globe';
 import { setupAi } from '../ai/setup';
 import { ToastBar, clearToast, showToast } from './Toast';
-import { DRAFT_SEG, FirstHint, HoverCard, MapBar, MapControls, PhoneButtons, SEG_LAYERS, hintSeen, markHintSeen } from './Corners';
+import { DRAFT_SEG, FirstHint, HoverCard, MapBar, MapControls, OldSiteBadge, PhoneButtons, SEG_LAYERS, hintSeen, markHintSeen } from './Corners';
+import { OLD_SITE, OWN_KEY, oldSiteFor, oldSiteNote, openInLatest, openOriginal, plainSave } from './oldSite';
+import type { ToastAction } from './toastStore';
 import { Sidebar } from './Sidebar';
 import { PhoneSheet } from './PhoneSheet';
 import { useLayerThumbs } from './LayerPopover';
@@ -243,6 +249,26 @@ import { makeFlagView, setFlagView, useFlagPreview } from './flagStore';
 import { noteGenSpeed } from './genSpeed';
 import { draftSig, draftTarget, firstRoute, randomSeedValue, readUrl, storedTarget, storyOk, writeHomeUrl, writeLayerUrl, writeWorldUrl, type Target } from './route';
 
+/**
+ * 读档提示条上的按钮:最新版里打开旧版本的世界 =「看原样」(到那一版的旧网站里看,新页面;没有那一版的旧网站就不放);
+ * 旧网站里打开更新的版本存的 =「到最新版打开」。orig:这个世界原来那一份
+ */
+function versionAction(orig: SaveFile | null): ToastAction | undefined {
+  if (!orig) return undefined;
+  if (OLD_SITE !== null) {
+    if (!(orig.generator > GENERATOR_VERSION)) return undefined;
+    return { label: '到最新版打开', act: 'open-latest', onClick: () => void openInLatest(orig).then((ok) => ok || openFailed()) };
+  }
+  const site = oldSiteFor(orig.generator);
+  if (!site) return undefined;
+  return { label: '看原样', act: 'see-original', onClick: () => void openOriginal(orig).then((ok) => ok || openFailed(site.href)) };
+}
+
+/** 交不过去(浏览器太旧,压缩不了存档):说一声怎么自己打开 */
+function openFailed(site?: string) {
+  notify({ kind: 'error', text: '这个浏览器打不开', more: [site ? `请把世界存成文件，到 ${site} 打开` : '请把世界存成文件，到最新版打开'] });
+}
+
 /** 新建时能看的样式(不用历史的那几种) */
 const STUDIO_LAYERS: MapLayer[] = STUDIO_STYLES.map((x) => x.id);
 
@@ -258,6 +284,8 @@ const MAP_KEEP = 2;
 
 /** 请求里带的地形大事(没有 = 不带) */
 const upsOpt = (u: readonly Upheaval[] | undefined) => (u?.length ? { upheavals: [...u] } : {});
+/** 推文明时带的地名风格(自动 = 不带) */
+const namesOpt = (names: NameMix | undefined) => (names ? { names } : {});
 
 /** 结束那一年现存几国(我的世界的卡片上写;没长出文明 = 0) */
 function aliveAtEnd(civ: Civ): number {
@@ -425,7 +453,7 @@ export function App() {
   /** 分享短链接:正在取 / 停了 / 打不开(取到了 = null) */
   const [landing, setLanding] = useState<'loading' | 'gone' | { error: string } | null>(route.stage === 'home' && init.shortShare !== null && !init.share ? 'loading' : null);
   /** 打开别人分享的世界:地图下那条说明(这个世界的编号;点了"知道了"、改了存进我的世界以后不再显示) */
-  const [sharedFor, setSharedFor] = useState<{ id: string; short: boolean; by: string } | null>(null);
+  const [sharedFor, setSharedFor] = useState<{ id: string; short: boolean; by: string; own: boolean } | null>(null);
   const touchRef = useRef(() => {});
   touchRef.current = () => {
     if (getStage().stage !== 'world') return;
@@ -463,6 +491,8 @@ export function App() {
    */
   const civUps = useRef<readonly Upheaval[] | undefined>(undefined);
   const genUps = useRef<readonly Upheaval[] | undefined>(undefined);
+  /** 最近一次请求的文明是按哪种地名风格起名的(自动 = undefined) */
+  const civNames = useRef<NameMix | undefined>(undefined);
   const rawUps = useRef<readonly Upheaval[] | undefined>(undefined);
   /** 读档 / 自动恢复套上的地形大事(按它重推完不提示) */
   const restoredUps = useRef<readonly Upheaval[] | undefined | null>(null);
@@ -625,7 +655,7 @@ export function App() {
       if (signal?.aborted) return Promise.reject(new Error('已停下'));
       const tid = ++trialSeq.current;
       const ups = civUps.current;
-      const job = compute.trial({ type: 'trial', id: getWorldSession().worldId, tid, params: p, terrain: [...genTerrain.current], sketch: genSketch.current, interventions: [...interventions], ...upsOpt(ups) });
+      const job = compute.trial({ type: 'trial', id: getWorldSession().worldId, tid, params: p, terrain: [...genTerrain.current], sketch: genSketch.current, interventions: [...interventions], ...upsOpt(ups), ...namesOpt(civNames.current) });
       const onAbort = () => job.cancel('已停下');
       signal?.addEventListener('abort', onAbort, { once: true });
       return job.result.then(
@@ -712,7 +742,7 @@ export function App() {
   const applyResim = (next: Civ, workerMs: number, eras: EraWorld[] | undefined, baseKey: string, requestId: string) => {
     const old = getWorldSession().civ;
     const sameUps = sameUpheavals(civUps.current, rawUps.current);
-    const civ: Civ = old ? reuseRegions(old, next, sameUps) : next;
+    const civ: Civ = old ? reuseRegions(old, next, sameUps, true) : next;
     rawUps.current = civUps.current;
     // 地形大事以后各段的世界:和现在一样(只改了干预)就不换,地图不用重画(undefined = 会话里那份不动)
     const base = getWorldSession().body;
@@ -830,7 +860,9 @@ export function App() {
       setShownEdits(terrain, t.edits.sketch);
       setTerrainTool({ on: false });
       closeUpheaval();
-      const job = compute.generate({ type: 'generate', id, params: p, scale: 1, terrain: [...terrain], sketch: t.edits.sketch });
+      // 地名风格也直接带着(只管起名,和改名、干预不同:生成完不用再重推一遍)
+      civNames.current = t.edits.nameMix;
+      const job = compute.generate({ type: 'generate', id, params: p, scale: 1, terrain: [...terrain], sketch: t.edits.sketch, ...namesOpt(t.edits.nameMix) });
       // 正式世界的活登记进会话:界面"能不能操作"看它;算炸了 / 线程崩了也有确定的收尾
       beginWorldTask('generate', job.requestId);
       job.result.catch((e: AppError) => taskFailed(job.requestId, e));
@@ -858,8 +890,13 @@ export function App() {
     // 分享链接:先把 # 那段从地址栏去掉(刷新不会重复导入),解开以后走读档流程;
     // 链接里的种子、参数和网址上的一样,所以照常先按网址生成,不用等
     if (init.share) {
-      history.replaceState(null, '', location.pathname + location.search);
-      decodeShare(init.share).then((r) => openShareRef.current(r));
+      // own=1:最新版和旧网站之间交过来的自己的世界(看原样、到最新版打开),不说成别人分享的;标记用过就从地址栏去掉
+      const q = new URLSearchParams(location.search);
+      const own = q.get(OWN_KEY) === '1';
+      q.delete(OWN_KEY);
+      const rest = `${q}`;
+      history.replaceState(null, '', location.pathname + (rest ? `?${rest}` : ''));
+      decodeShare(init.share).then((r) => openShareRef.current(r, undefined, own));
     }
     // 邀请链接(invite=):记下邀请码,弹出登录窗(已经登录了就算了)
     if (takeInviteFromUrl() && serverBase() && !getSession()) openLogin();
@@ -898,6 +935,7 @@ export function App() {
     civEdits.current = interventions;
     civUps.current = genUps.current = ups;
     invalidateSimulation();
+    civNames.current = getEdits().nameMix;
     resimInfo.current = null;
     setResim(null);
     regenRef.current = { id, t0: performance.now(), terrain: t, sketch: sk };
@@ -912,7 +950,7 @@ export function App() {
     clearChroniclePick();
     if (getChronicle().polity !== null) setChronicle({ polity: null });
     if (getPeople().polity !== null) setPeople({ polity: null });
-    const job = compute.generate({ type: 'generate', id, params: genParams.current, scale: 1, terrain: [...t], sketch: sk, interventions: [...interventions], ...upsOpt(ups) });
+    const job = compute.generate({ type: 'generate', id, params: genParams.current, scale: 1, terrain: [...t], sketch: sk, interventions: [...interventions], ...upsOpt(ups), ...namesOpt(civNames.current) });
     beginWorldTask('regenerate', job.requestId);
     job.result.catch((e: AppError) => taskFailed(job.requestId, e));
   }, [edits.terrain, edits.sketch, baseData, compute]);
@@ -921,7 +959,10 @@ export function App() {
   useEffect(() => {
     const list = edits.interventions;
     const ups = edits.upheavals;
-    if (!baseData || !genParams.current || (sameInterventions(list, civEdits.current) && sameUpheavals(ups, civUps.current))) return;
+    const names = edits.nameMix;
+    // 地名风格:生成新世界时已经带着(修改先清空、生成完再套上,这期间不算变了);新建时换了风格,只重推、重新起名
+    const sameNames = fresh.current || sameMix(names, civNames.current);
+    if (!baseData || !genParams.current || (sameInterventions(list, civEdits.current) && sameUpheavals(ups, civUps.current) && sameNames)) return;
     if (!sameTerrain(getEdits().terrain, genTerrain.current) || !sameSketch(getEdits().sketch, genSketch.current)) return; // 等改地形那次生成一起推
     // 从哪一年起变:新加的 / 删掉的干预、地形大事里最早的那一年(重推完时间轴停在这里)
     const before = civEdits.current;
@@ -934,11 +975,14 @@ export function App() {
     const upChanged = [...upNow.filter((_, i) => !ub.includes(ua[i])), ...upBefore.filter((_, i) => !ua.includes(ub[i]))];
     const years = [...(changed.length || upChanged.length ? changed : list).map((v) => Math.floor(v.from)), ...upChanged.map((u) => u.year)].filter((y) => Number.isFinite(y));
     const year = years.length ? Math.max(0, Math.min(...years)) : 0;
+    // 只换了地名风格:历史不变,不提示、不跳时间
+    const namesOnly = !changed.length && !upChanged.length && sameInterventions(list, before) && sameUpheavals(ups, civUps.current);
     civEdits.current = list;
     civUps.current = ups;
+    if (!fresh.current) civNames.current = names;
     const seq = nextSimulationVersion();
     // 只多了一条 = 新下的干预 / 新加的大事;只少了一条 = 撤销(读档、自动恢复套上的不算,不提示)
-    const quiet = list === restoredIv.current && ups === restoredUps.current;
+    const quiet = namesOnly || (list === restoredIv.current && ups === restoredUps.current);
     const one = changed.length + upChanged.length === 1;
     const added = !quiet && one && list.length === before.length + 1 ? changed[0] : undefined;
     const removed = !quiet && one && list.length === before.length - 1 ? changed[0] : undefined;
@@ -956,11 +1000,12 @@ export function App() {
       sketch: genSketch.current,
       interventions: list,
       ...upsOpt(ups),
+      ...namesOpt(civNames.current),
       have: [...eraPatches.current.keys()],
     });
     beginWorldTask('resimulate', job.requestId, year);
     job.result.catch((e: AppError) => taskFailed(job.requestId, e));
-  }, [edits.interventions, edits.upheavals, baseData, compute]);
+  }, [edits.interventions, edits.upheavals, edits.nameMix, baseData, compute]);
   // 重推的文明画到地图上以后,记下"从下命令到地图更新"用了多久(冒烟检查用)
   useEffect(() => {
     const info = resimInfo.current;
@@ -1089,7 +1134,9 @@ export function App() {
     const err = shareErr.current;
     shareErr.current = null;
     if (err) showToast({ id: 'share', kind: 'error', text: '打不开这个分享链接', more: [err] });
-    const say = (n: Parameters<typeof notify>[0]) => n && notify({ ...n, more: n.more?.map(briefWarning) });
+    /** 提示条上的「看原样」/「到最新版打开」(世界变了样才有,见下面) */
+    let act: ToastAction | undefined;
+    const say = (n: Parameters<typeof notify>[0]) => n && notify({ ...n, more: n.more?.map((w) => briefWarning(oldSiteNote(w))), action: n.action ?? act });
     const check = worldCheck(world);
     // 投影和中央经线跟着世界存:换成存档里的(旧存档没有 = 等距圆柱、0°)
     if (t.view !== undefined) applyView(t.view ?? undefined);
@@ -1103,21 +1150,25 @@ export function App() {
     resetMarkUi();
     resetCharacterUi();
     setEdits(edits);
-    attachWorld({ id: t.id, params: world.params, check, kind: t.kind, title: t.title, saved: t.saved ?? edits, view: t.view ?? undefined, pristine: t.pristine, base: t.base, origin: t.origin });
+    // 还没存着的旧版本世界(分享链接、旧网址、存不进浏览器的文件):原来那一份跟着(看原样;改了存进来时原样留着)
+    const original = t.from === 'url' ? (t.gen !== undefined ? plainSave(world.params, t.gen) : null) : t.from === 'link' || t.from === 'file' ? (t.save ?? null) : null;
+    attachWorld({ id: t.id, params: world.params, check, kind: t.kind, title: t.title, saved: t.saved ?? edits, view: t.view ?? undefined, pristine: t.pristine, base: t.base, origin: t.origin, original });
     if (t.kind !== 'draft') setWorldStats(aliveAtEnd(rc));
     const save = t.save;
     // 带种子的网址(别人发的普通链接):是旧版本画的就说清现在变了什么
     if (t.from === 'url') {
       const note = t.gen !== undefined ? versionNote(t.gen, false) : null;
+      act = versionAction(t.gen !== undefined ? plainSave(world.params, t.gen) : null);
       if (note) say({ kind: 'warn', text: `已打开「种子 ${world.params.seed}」`, more: [note] });
       return;
     }
     if (!save || !t.from) return;
     const more: string[] = [...(t.warnings ?? [])];
-    if (t.from === 'stored' || t.from === 'restore') {
-      const note = versionNote(save.generator, (save.edits.terrain?.length ?? 0) > 0 || !!save.edits.sketch);
-      if (note) more.push(note);
-    }
+    const note = versionNote(save.generator, (save.edits.terrain?.length ?? 0) > 0 || !!save.edits.sketch);
+    // 从文件、分享链接打开的,这句已经在读档的警告里
+    if (note && (t.from === 'stored' || t.from === 'restore')) more.push(note);
+    // 世界变了样(有"来自旧版本"这一句)才放「看原样」;旧网站里来自更新版本的放「到最新版打开」
+    if (note && more.includes(note)) act = versionAction(OLD_SITE !== null ? save : currentOriginal());
     // 地形校验只在"生成时带的地形修改就是存档里的"时才核对
     const cw = sameT ? checkWarning(save, check) : null;
     if (cw) more.push(cw);
@@ -1267,9 +1318,10 @@ export function App() {
   };
   /**
    * 打开分享链接(解开以后):别人的世界,先不存;改了(或起了名)才存进"我的世界"。
-   * 短链接(short):改了另存时写明底稿出处(署名、这时的世界名、这个链接);长链接里没有分享人,不写
+   * 短链接(short):改了另存时写明底稿出处(署名、这时的世界名、这个链接);长链接里没有分享人,不写。
+   * own:最新版和旧网站之间交过来的自己的世界:最新版里不出"别人分享给你的世界"那条说明(旧网站上那条换成旧网站的说法,照常出)
    */
-  const openShare = (r: ParseResult, short?: { code: string; by?: string }) => {
+  const openShare = (r: ParseResult, short?: { code: string; by?: string }, own = false) => {
     if (!r.ok) {
       const msg = briefError(r.error);
       // 世界还在生成:等生成完再说(生成时提示条上是进度)
@@ -1280,7 +1332,7 @@ export function App() {
     const sv = r.save;
     const id = newWorldId();
     const by = short ? cleanSignature(short.by) : '';
-    setSharedFor({ id, short: !!short, by });
+    setSharedFor(own && OLD_SITE === null ? null : { id, short: !!short, by, own });
     const origin: SaveOrigin | null = short ? { ...(by ? { by } : {}), title: sv.title ?? '', url: shortLink(short.code) } : null;
     openTarget({ id, kind: 'visit', params: sv.params, edits: sv.edits, saved: sv.edits, title: sv.title, view: sv.view ?? null, from: 'link', save: sv, warnings: r.warnings, shareCode: short?.code, origin });
   };
@@ -1326,8 +1378,11 @@ export function App() {
     // 没画草图 = 整颗星球都换了,放的那几处是照原来的地形放的,不带过去。助手的对话(说的是原来那颗)也清掉
     newConversation();
     const sketch = st.edits.sketch;
-    const plain = !st.title && !sketch && worldKey({ ...t.params, seed: 0 }) === worldKey({ ...DEFAULT_PARAMS, seed: 0 });
-    const edits = sketch ? { ...EMPTY_EDITS, sketch, terrain: st.edits.terrain } : EMPTY_EDITS;
+    const plain = !st.title && !sketch && !st.edits.nameMix && worldKey({ ...t.params, seed: 0 }) === worldKey({ ...DEFAULT_PARAMS, seed: 0 });
+    // 地名风格和参数一样是这一类星球的设定,换一颗照旧
+    const nameMix = st.edits.nameMix;
+    const kept: WorldEdits = sketch ? { ...EMPTY_EDITS, sketch, terrain: st.edits.terrain } : EMPTY_EDITS;
+    const edits = nameMix ? { ...kept, nameMix } : kept;
     generate({ ...t, params: { ...t.params, seed }, edits, saved: undefined, title: st.title, pristine: st.pristine || plain, view: undefined, from: undefined, save: undefined });
   };
   /** 新建中调参数:改过的地形留着(按新参数重新生成) */
@@ -1590,7 +1645,8 @@ export function App() {
     }
     return c;
   }, []);
-  const { thumbs, request: requestThumbs } = useLayerThumbs({ data, civ: rawCiv, baseCanvas }, mapLayer);
+  // 缩略图和地图画同一段:时间轴在地形大事以前时,底图是那一段的,州也要用那一段的(shownRaw)
+  const { thumbs, request: requestThumbs } = useLayerThumbs({ data, civ: shownRaw, baseCanvas }, mapLayer);
 
   // ---- 回放:看世界长出来 ----
   const startReplay = () => {
@@ -3294,7 +3350,7 @@ export function App() {
         )
       ) : narrow ? (
         <>
-          {/* 手机:底部的世界卡片(没选东西时;选中了东西换成详情卡片)、右上竖排的毛玻璃按钮(图层、地球);数据图层的图例在左上。
+          {/* 手机:底部的世界卡片(没选东西时;选中了东西换成详情卡片)、右上竖排的毛玻璃按钮(图层、地球);数据图层的图例、旧网站的「旧版」标记在左上。
               界面都在卡片和毛玻璃按钮上,地图上不再压字、不用渐变遮罩;最近大事在世界卡片拉到顶时的列表里。
               新建时这些都不放(新建界面自己一套) */}
           {!draft && !selState.sel && !upOn && (
@@ -3311,15 +3367,16 @@ export function App() {
               />
           )}
           {!draft && <PhoneButtons layers={{ ...layerProps, draft }} globeOn={globeOn} onToggleGlobe={toggleGlobe} marking={markable ? markPlacing : undefined} />}
-          {!draft && style === 'data' && (
+          {!draft && (OLD_SITE !== null || style === 'data') && (
             <div className="corner-tl">
-              <Legend layer={layer} />
+              <OldSiteBadge />
+              {style === 'data' && <Legend layer={layer} />}
             </div>
           )}
         </>
       ) : (
         <>
-          {/* 宽屏:左边侧栏(世界 / 选中的东西的详情、搜索、存档);右上图层、导出、编年史;数据图层的图例在地图左上。新建时都不放(新建界面自己一套) */}
+          {/* 宽屏:左边侧栏(世界 / 选中的东西的详情、搜索、存档);右上图层、导出、编年史;数据图层的图例、旧网站的「旧版」标记在地图左上。新建时都不放(新建界面自己一套) */}
           {!draft && (
             <Sidebar
               data={data}
@@ -3334,9 +3391,10 @@ export function App() {
             />
           )}
           {!draft && <MapBar civ={civ} layers={layerProps} exp={{ data, civ, plain: plainCiv, style, layer }} draft={draft} />}
-          {!draft && style === 'data' && !terrainTool.on && (
+          {!draft && (OLD_SITE !== null || (style === 'data' && !terrainTool.on)) && (
             <div className="corner-tl">
-              <Legend layer={layer} />
+              <OldSiteBadge />
+              {style === 'data' && !terrainTool.on && <Legend layer={layer} />}
             </div>
           )}
         </>
@@ -3352,7 +3410,7 @@ export function App() {
       <ToastBar />
       {/* 右下(时间轴上方):地球 / 平面、放大、缩小。触屏不放 + −(用双指捏合);窄屏整个不放(地球在右上竖排的按钮里) */}
       <MapControls globeOn={globeOn} onToggleGlobe={toggleGlobe} onZoom={zoomButton} shifted={false} hidden={!data || narrow || home || draft} zoom={!coarse} marking={markable ? markPlacing : undefined} />
-      {sharedOn ? <SharedHint phone={narrow} short={sharedFor.short} by={sharedFor.by} onOk={() => setSharedFor(null)} /> : <FirstHint show={hintOn && !!data && world && !terrainTool.on && !upOn} touch={coarse} />}
+      {sharedOn ? <SharedHint phone={narrow} short={sharedFor.short} by={sharedFor.by} own={sharedFor.own} onOk={() => setSharedFor(null)} /> : <FirstHint show={hintOn && !!data && world && !terrainTool.on && !upOn} touch={coarse} />}
       {world && !narrow && <UpheavalHint />}
       {/* 底部:时间轴(宽屏是卡片右边那一块底下的胶囊;手机是浮在底部卡片上面的胶囊);新建时还没有历史,不放 */}
       <div className="bottom-row">

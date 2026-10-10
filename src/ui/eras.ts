@@ -82,22 +82,32 @@ const baseHabitat = (civ: Civ) => civ.eras?.[0]?.habitat ?? civ.habitat;
 
 /**
  * 重推回来的文明沿用现在这份的州(地理没变;地图上的缓存按对象认"还是同一个世界"):
- * 第一件大事以前的州和宜居度总是一样的(同一个世界);之后各段的只在带着一样的地形大事(sameUps)时沿用。州数对不上的不沿用
+ * 第一件大事以前的州和宜居度总是一样的(同一个世界);之后各段的只在带着一样的地形大事(sameUps)时沿用。州数对不上的不沿用。
+ * 州名(regions.name)不是地理:换了地名风格会重起。names = 要换上的这份是真的换上去(不是试推演):沿用的州换上新起的州名(还是同一个对象)
  */
-export function reuseRegions(old: Civ, next: Civ, sameUps: boolean): Civ {
+export function reuseRegions(old: Civ, next: Civ, sameUps: boolean, names = false): Civ {
   const base = baseRegions(old);
+  const withNames = names ? carryNames : (keep: Civ['regions']) => keep;
   if (sameUps) {
     if (old.regions.count !== next.regions.count) return next;
     const eras = next.eras?.map((e, i) => {
       const o = old.eras?.[i];
-      return o && o.regions.count === e.regions.count ? { ...e, habitat: o.habitat, regions: o.regions } : e;
+      return o && o.regions.count === e.regions.count ? { ...e, habitat: o.habitat, regions: withNames(o.regions, e.regions) } : e;
     });
-    return { ...next, regions: old.regions, habitat: old.habitat, ...(eras ? { eras } : {}) };
+    return { ...next, regions: withNames(old.regions, next.regions), habitat: old.habitat, ...(eras ? { eras } : {}) };
   }
   const e0 = next.eras?.[0];
-  if (e0) return e0.regions.count === base.count ? { ...next, eras: [{ ...e0, habitat: baseHabitat(old), regions: base }, ...next.eras!.slice(1)] } : next;
+  if (e0) return e0.regions.count === base.count ? { ...next, eras: [{ ...e0, habitat: baseHabitat(old), regions: withNames(base, e0.regions) }, ...next.eras!.slice(1)] } : next;
   // 地形大事都撤销了:州就是原来那一份
-  return next.regions.count === base.count ? { ...next, regions: base, habitat: baseHabitat(old) } : next;
+  return next.regions.count === base.count ? { ...next, regions: withNames(base, next.regions), habitat: baseHabitat(old) } : next;
+}
+
+/** 沿用的州换上新推出来的州名(一样就不动) */
+function carryNames(keep: Civ['regions'], from: Civ['regions']): Civ['regions'] {
+  const a = keep.name;
+  const b = from.name;
+  if (b && (!a || a.length !== b.length || a.some((x, i) => x !== b[i]))) keep.name = b;
+  return keep;
 }
 
 // ---------------------------------------------------------------------------

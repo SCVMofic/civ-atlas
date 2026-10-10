@@ -236,6 +236,175 @@
   display: none;
 }
 
+/* ---- 左边换成的「地名风格」页(NameMixPage.tsx):自动 / 自己配、占比条、每种一行「− 份数 +」 ---- */
+.st-in.nm-page {
+  gap: 14px;
+}
+/* 二选一:和平常页面的分段按钮(desktop.css 的 .seg-btn)一个样子,两格等宽 */
+.nm-seg {
+  display: flex;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--btn);
+}
+.nm-seg button {
+  flex: 1;
+  height: 28px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 13.5px;
+}
+.nm-seg button.on {
+  background: rgba(255, 255, 255, 0.18);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.14);
+}
+/* 这颗星球上各种语感占了多少:一根按颜色分段的条,中式在左、音译在右 */
+.nm-card {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 12px 11px;
+  border-radius: 10px;
+  background: var(--btn);
+}
+.nm-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.nm-head b {
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.nm-bar {
+  display: flex;
+  gap: 1.5px;
+  height: 10px;
+  border-radius: 5px;
+  overflow: hidden;
+}
+.nm-bar i {
+  display: block;
+  height: 100%;
+  transition: flex-grow 0.3s ease;
+}
+.nm-card.busy .nm-bar,
+.nm-card.busy .nm-head b {
+  opacity: 0.5;
+  transition: opacity 0.2s ease 0.15s;
+}
+.nm-note {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+/* 快捷按钮 */
+.nm-chips {
+  display: flex;
+  gap: 6px;
+}
+.nm-chips button {
+  flex: 1;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 14px;
+  background: var(--btn);
+  color: var(--ink);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.nm-chips button:hover:not(:disabled) {
+  background: rgba(118, 118, 128, 0.4);
+}
+.nm-seg button:disabled,
+.nm-chips button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.nm-page .sb-sec-head small b {
+  font-weight: 600;
+  color: var(--ink-2);
+}
+/* 每种一行:圆点(没有 / 不用时空心)、名字和例子、占比、加减 */
+.studio .sb-row.nm-row {
+  min-height: 52px;
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+.nm-dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  margin-right: -2px;
+  border-radius: 50%;
+}
+.nm-row.zero b {
+  color: var(--ink-2);
+}
+.nm-pct {
+  flex: none;
+  min-width: 34px;
+  text-align: right;
+  font-size: 13px;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+.nm-pct.none {
+  color: var(--ink-3);
+}
+.nm-step {
+  flex: none;
+  display: flex;
+  align-items: center;
+}
+.nm-b {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  color: var(--ink);
+}
+.nm-b:hover:not(:disabled) {
+  background: var(--hover-bg);
+}
+.nm-b:disabled {
+  color: var(--ink-3);
+  box-shadow: inset 0 0 0 1px var(--line);
+  cursor: default;
+}
+.nm-n {
+  width: 24px;
+  text-align: center;
+  font-size: 14.5px;
+  font-variant-numeric: tabular-nums;
+}
+.nm-n.zero {
+  color: var(--ink-3);
+}
+/* 手机:行高一点、加减按钮大一点(32 像素) */
+.studio .st-sheet .sb-row.nm-row {
+  min-height: 54px;
+}
+.st-sheet .nm-b {
+  width: 32px;
+  height: 32px;
+}
+.st-sheet .nm-n {
+  width: 26px;
+}
+
 /* ---- 右边:样式和投影 ---- */
 .st-right {
   position: absolute;

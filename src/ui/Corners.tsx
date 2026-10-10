@@ -10,6 +10,7 @@
  *                     世界名、搜索、存档、成书都在底部的世界卡片里(PhoneSheet.tsx)
  *   底部 FirstHint    第一次打开时的一行操作提示,第一次拖动 / 缩放 / 点击之后不再出现(触屏换成"双指缩放"的说法)
  *   跟随鼠标 HoverCard 悬停小卡片(内容见 hoverInfo.ts)
+ *   左上 OldSiteBadge 旧版网站(oldSite.ts)一直挂着的「旧版 10 月 11 日更新以前」和「到最新版」;「我的世界」页顶上也放一个
  * 地图上的文字按钮不加底、只带描边(--halo),悬停出现浅灰底。
  */
 import { useLayoutEffect, useRef, useState } from 'react';
@@ -26,6 +27,7 @@ import { toggleAssistant, useAstOpen } from './astPanel';
 import { togglePlacing } from './markStore';
 import { useAssistant } from './assistantStore';
 import { useAiOn } from '../ai/client';
+import { OLD_SITE, OLD_UNTIL, latestUrl } from './oldSite';
 import './book.css';
 
 /** 右上图层分段按钮里直接列出的几个图层(其余的在"更多图层"里) */
@@ -295,5 +297,20 @@ function HoverLines({ info }: { info: HoverInfo }) {
       </div>
       {info.extra && <div className="hc-extra">{info.extra}</div>}
     </>
+  );
+}
+
+/** 旧版网站:地图左上(和「我的世界」页顶上)一直挂着的标记,写明是旧版、哪天以前的,带回最新版的链接;最新版不放 */
+export function OldSiteBadge() {
+  if (OLD_SITE === null) return null;
+  return (
+    <div className="glass old-badge" data-testid="old-site">
+      <Icon name="history" size={16} />
+      <b>旧版</b>
+      {OLD_UNTIL && <span className="old-badge-when">{OLD_UNTIL}更新以前</span>}
+      <a className="old-badge-go" href={latestUrl().href} data-act="old-latest">
+        到最新版
+      </a>
+    </div>
   );
 }

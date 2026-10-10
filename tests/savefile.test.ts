@@ -340,7 +340,7 @@ function useStorage(s: unknown) {
 }
 
 /** 模拟 App 打开一个世界:换世界(先 detach 再清空),生成完套上修改(存着的就套存着的),再 attach */
-function openWorld(seed: number, o: { id?: string; kind?: saveStore.WorldKind; title?: string; pristine?: boolean; edits?: WorldEdits; origin?: SaveOrigin } = {}) {
+function openWorld(seed: number, o: { id?: string; kind?: saveStore.WorldKind; title?: string; pristine?: boolean; edits?: WorldEdits; origin?: SaveOrigin; original?: SaveFile } = {}) {
   const p = { ...DEFAULT_PARAMS, seed };
   saveStore.detachWorld();
   clearEdits();
@@ -358,6 +358,7 @@ function openWorld(seed: number, o: { id?: string; kind?: saveStore.WorldKind; t
     view: stored?.save.view,
     pristine: o.pristine,
     origin: o.origin ?? stored?.save.origin,
+    original: o.original,
   });
   return id;
 }
@@ -745,12 +746,13 @@ describe('浏览器存储(saveStore)', () => {
     expect(saveStore.listWorlds()[0].id).toBe(a);
   });
 
-  it('以前按"种子 + 参数"存的世界:换成新编号,缩略图、AI 写的东西跟过去,当作建好的', () => {
+  it('以前按"种子 + 参数"存的世界:换成新编号,缩略图、AI 写的东西、旧版本的原样跟过去,当作建好的', () => {
     const fake = new FakeStorage();
     const old = worldKey({ ...DEFAULT_PARAMS, seed: 7 });
     fake.setItem(`wenming-ditu:world:${old}`, saveText(makeSave({ ...DEFAULT_PARAMS, seed: 7 }, EDITS, 'check7', '九州大陆')));
     fake.setItem(`wenming-ditu:thumb:${old}`, 'data:image/jpeg;base64,BBBB');
     fake.setItem(`civ-atlas:ai-notes:${old}`, '{"n":2}');
+    fake.setItem(`wenming-ditu:orig:${old}`, '{"原样":1}');
     useStorage(fake);
     const list = saveStore.listWorlds();
     expect(list.length).toBe(1);
@@ -759,8 +761,10 @@ describe('浏览器存储(saveStore)', () => {
     expect(w).toMatchObject({ draft: false, thumb: 'data:image/jpeg;base64,BBBB' });
     expect(w.save.title).toBe('九州大陆');
     expect(fake.getItem(`civ-atlas:ai-notes:${w.id}`)).toBe('{"n":2}');
+    expect(fake.getItem(`wenming-ditu:orig:${w.id}`)).toBe('{"原样":1}');
     expect(fake.getItem(`wenming-ditu:world:${old}`)).toBeNull();
     expect(fake.getItem(`wenming-ditu:thumb:${old}`)).toBeNull();
+    expect(fake.getItem(`wenming-ditu:orig:${old}`)).toBeNull();
     // 改版前的网址(只带种子、参数)刷新还找得回它;别的种子、参数不算
     expect(saveStore.legacyWorld({ ...DEFAULT_PARAMS, seed: 7 })?.id).toBe(w.id);
     expect(saveStore.legacyWorld({ ...DEFAULT_PARAMS, seed: 7, plates: 15 })).toBeNull();
@@ -910,6 +914,130 @@ describe('浏览器存储(saveStore)', () => {
     expect(getEdits()).toBe(EMPTY_EDITS);
     setName('settlement:r1#0', '饕餮城');
     expect(saveStore.loadWorld(id)?.count).toBe(1);
+    // 读不出来的坏存档不当成旧版本留底
+    expect(fake.getItem(`wenming-ditu:orig:${id}`)).toBeNull();
+  });
+
+  it('旧版本存的世界:第一次按新版重存之前原样留一份,只留最早那份;删除、撤销、复制、同步、全删跟着走', () => {
+    const fake = new FakeStorage();
+    useStorage(fake);
+    const orig = (id: string) => fake.getItem(`wenming-ditu:orig:${id}`);
+    /** 旧版本生成器存的存档原文 */
+    const oldText = (seed: number, generator: number) =>
+      JSON.stringify({ ...makeSave({ ...DEFAULT_PARAMS, seed }, EDITS, `check${seed}`, '苍澜界', '2026-10-01T08:00:00.000Z'), generator });
+    const id = saveStore.newWorldId();
+    const text = oldText(7, GENERATOR_VERSION - 1);
+    fake.setItem(`wenming-ditu:world:${id}`, text);
+
+    // 原样打开、什么都没动:不重存,也不留
+    openWorld(7, { id });
+    expect(fake.getItem(`wenming-ditu:world:${id}`)).toBe(text);
+    expect(orig(id)).toBeNull();
+    // 拖了一下地图换了中心:按新版重存之前,原来那份原样留着
+    publishMapCenter(30);
+    saveStore.viewChanged();
+    publishMapCenter(0);
+    expect(saveStore.loadWorld(id)?.save.generator).toBe(GENERATOR_VERSION);
+    expect(orig(id)).toBe(text);
+    // 以后再改、换个世界再回来再改:留的还是最早那份;本来就是新版的世界不留
+    setName('settlement:r1#0', '饕餮城');
+    const now = openWorld(8);
+    setName('settlement:r1#0', '梼杌城');
+    expect(orig(now)).toBeNull();
+    openWorld(7, { id });
+    setName('settlement:r1#0', '穷奇城');
+    expect(saveStore.loadWorld(id)?.save.edits.names['settlement:r1#0']).toBe('穷奇城');
+    expect(orig(id)).toBe(text);
+
+    // 删除跟着删,撤销跟着回来;复制一份也带上
+    const gone = saveStore.deleteWorld(id)!;
+    expect(orig(id)).toBeNull();
+    expect(saveStore.restoreWorld(gone)).toBe(true);
+    expect(orig(id)).toBe(text);
+    const copy = saveStore.duplicateWorld(id)!;
+    expect(orig(copy)).toBe(text);
+
+    // 同步带来另一台设备在新版里重存过的同一个世界:这里原来那份原样留着
+    const synced = saveStore.newWorldId();
+    const text9 = oldText(9, GENERATOR_VERSION - 2);
+    fake.setItem(`wenming-ditu:world:${synced}`, text9);
+    const newer = (names: Record<string, string>) => JSON.stringify(makeSave({ ...DEFAULT_PARAMS, seed: 9 }, { ...EDITS, names }, 'check9', '苍澜界', '2026-10-09T08:00:00.000Z'));
+    expect(saveStore.putSyncedWorld(synced, { save: newer(EDITS.names), meta: {}, thumb: null })).toBe(true);
+    expect(orig(synced)).toBe(text9);
+    // 同步带来的存得下、原样留不下(存储快满了):照样存上,不留
+    const full = saveStore.newWorldId();
+    const text10 = oldText(10, GENERATOR_VERSION - 1);
+    fake.setItem(`wenming-ditu:world:${full}`, text10);
+    const used = () => [...fake.map].reduce((n, [k, v]) => n + k.length + v.length, 0);
+    fake.cap = used() + 200;
+    expect(saveStore.putSyncedWorld(full, { save: newer(EDITS.names), meta: {}, thumb: null })).toBe(true);
+    expect(fake.getItem(`wenming-ditu:world:${full}`)).toBe(newer(EDITS.names));
+    expect(orig(full)).toBeNull();
+    fake.cap = Infinity;
+
+    // 退出登录选了从这台设备上删掉:一起删
+    expect(saveStore.removeAllWorlds()).toBe(true);
+    expect([...fake.map.keys()].some((k) => k.startsWith('wenming-ditu:orig:'))).toBe(false);
+
+    // 自动存时存储快满了:新版的存档照样存上,不为留底删别的世界;留不下就不留,之后接着自动存
+    const tight = new FakeStorage();
+    useStorage(tight);
+    const other = openWorld(8, { title: '赤霄纪' });
+    tick();
+    const id2 = saveStore.newWorldId();
+    tight.setItem(`wenming-ditu:world:${id2}`, text);
+    openWorld(7, { id: id2 });
+    tight.cap = [...tight.map].reduce((n, [k, v]) => n + k.length + v.length, 0) + 200;
+    setName('settlement:r1#0', '饕餮城');
+    expect(saveStore.loadWorld(id2)?.save).toMatchObject({ generator: GENERATOR_VERSION, edits: { names: { 'settlement:r1#0': '饕餮城' } } });
+    expect(tight.getItem(`wenming-ditu:orig:${id2}`)).toBeNull();
+    expect(saveStore.loadWorld(other)).not.toBeNull();
+    setName('settlement:r1#0', '梼杌城');
+    expect(saveStore.loadWorld(id2)?.save.edits.names['settlement:r1#0']).toBe('梼杌城');
+    expect(saveStore.storageIsFull()).toBe(false);
+  });
+
+  it('看原样:找得到旧版本的世界原来那一份;打开旧版本的链接以后改了才存的,第一次存时也留着', () => {
+    const fake = new FakeStorage();
+    useStorage(fake);
+    const oldSave = (seed: number, generator: number) => ({ ...makeSave({ ...DEFAULT_PARAMS, seed }, EDITS, `check${seed}`, '苍澜界', '2026-10-01T08:00:00.000Z'), generator });
+    // 存着、还没按新版重存:就是存着的这份
+    const id = saveStore.newWorldId();
+    fake.setItem(`wenming-ditu:world:${id}`, JSON.stringify(oldSave(7, GENERATOR_VERSION - 1)));
+    openWorld(7, { id });
+    expect(saveStore.originalOf(id)?.generator).toBe(GENERATOR_VERSION - 1);
+    expect(saveStore.currentOriginal()?.generator).toBe(GENERATOR_VERSION - 1);
+    // 按新版重存以后:是留的那份
+    setName('settlement:r1#0', '饕餮城');
+    expect(saveStore.loadWorld(id)?.save.generator).toBe(GENERATOR_VERSION);
+    expect(saveStore.originalOf(id)).toMatchObject({ generator: GENERATOR_VERSION - 1, edits: { names: EDITS.names } });
+    // 交出去的是留的原文(存档格式、各项都是当时写的),不是按现在的读法重新拼的
+    expect(saveStore.originalOf(id)).toEqual(JSON.parse(fake.getItem(`wenming-ditu:orig:${id}`)!));
+    // 新版建的世界:没有
+    const now = openWorld(8);
+    setName('settlement:r1#0', '梼杌城');
+    expect(saveStore.originalOf(now)).toBeNull();
+    expect(saveStore.currentOriginal()).toBeNull();
+
+    // 打开旧版本的分享链接(还没存):原来那份跟着当前世界;改了存进来时原样留着,以后照样找得到
+    const link = openWorld(9, { kind: 'visit', original: oldSave(9, GENERATOR_VERSION - 1) });
+    expect(fake.getItem(`wenming-ditu:world:${link}`)).toBeNull();
+    expect(saveStore.currentOriginal()?.seed).toBe(9);
+    setName('settlement:r1#0', '穷奇城');
+    expect(saveStore.loadWorld(link)?.save.generator).toBe(GENERATOR_VERSION);
+    expect(saveStore.originalOf(link)).toMatchObject({ seed: 9, generator: GENERATOR_VERSION - 1 });
+    // 带的那份不比现在旧(新版的链接):不留
+    const fresh = openWorld(10, { kind: 'visit', original: { ...oldSave(10, GENERATOR_VERSION) } });
+    expect(saveStore.currentOriginal()).toBeNull();
+    setName('settlement:r1#0', '混沌城');
+    expect(fake.getItem(`wenming-ditu:orig:${fresh}`)).toBeNull();
+
+    // 从文件打开、和存着的一样(存着的已经是新版的、没留过原样):用存着的那个,文件这份留作原样
+    const same = saveStore.newWorldId();
+    fake.setItem(`wenming-ditu:world:${same}`, JSON.stringify(makeSave({ ...DEFAULT_PARAMS, seed: 11 }, EDITS, 'check11', '苍澜界', '2026-10-09T08:00:00.000Z')));
+    const file = parseSave(JSON.stringify(oldSave(11, GENERATOR_VERSION - 1)));
+    expect(file.ok && saveStore.importSave(file.save)).toBe(same);
+    expect(saveStore.originalOf(same)?.generator).toBe(GENERATOR_VERSION - 1);
   });
 });
 

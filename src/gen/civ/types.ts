@@ -83,6 +83,8 @@ export interface Culture {
   name: string;
   /** 地名语感 id(地名生成器 src/gen/names/ 的语感) */
   style: string;
+  /** 按份数配地名风格(CivParams.names)时:自动时会挑的语感(界面上「照自动」按它折份数);自动时不写 */
+  autoStyle?: string;
   kind: CultureKind;
   /** 发源地区 */
   hearth: number;
@@ -353,6 +355,8 @@ export interface Civ {
    * 这时只有宜居度和州(地理),民族 / 城镇 / 国家 / 道路都是空的。
    */
   viable: boolean;
+  /** 整个世界的地名风格(CivParams.names,清理过的:语感 → 份数);自动 = 不写 */
+  names?: import('../names').NameMix;
   /**
    * 民族扩张的时间标定:走一个"标准路程"(平地、普通地形、扩张性 1)要多少年。
    * 按世界自动标定(默认到第 3000 年约九成可居州有人住;改过地形的世界按没改地形时的同一颗星球标定,见 index.ts 的 planetTempo),
@@ -593,6 +597,11 @@ export interface CivParams {
    * (第 k 件 = 原来的地形套上前 k 件大事的修改)。不给 / 空 = 没有。年份不在 (0, endYear) 里的不算
    */
   upheavals?: readonly import('./upheaval').UpheavalStep[];
+  /**
+   * 整个世界的地名风格(gen/names 的 NameMix):每种语感占几份,各民族只在有份的几种里挑、占的地方尽量合比例。
+   * 不给 / 一份都没有 = 自动:每个民族按发源地从全部语感里挑(和没有这一项逐字节一样)。只管起名,不改历史
+   */
+  names?: import('../names').NameMix;
 }
 
 /**
@@ -602,7 +611,7 @@ export interface CivParams {
  */
 export interface NamePins {
   /** 民族(推演前就定了,整份钉住):族名、语感、配色 */
-  cultures?: { name: string; style: string; color: [number, number, number] }[];
+  cultures?: { name: string; style: string; autoStyle?: string; color: [number, number, number] }[];
   /** 州名(下标 = 州;没有 = 不钉) */
   regionNames: (string | undefined)[];
   /** 国家:国名词根、配色、东方语感;dynasties = 各朝的朝名(下标 = Polity.dynasties 的下标;没有 = 不钉) */

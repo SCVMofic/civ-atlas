@@ -21,6 +21,7 @@ import { LAYERS, type LayerId } from '../render/layers';
 import { layerDef, layerFromUrl, type MapLayer, type Style } from './mapLayers';
 import { wrapLon } from '../render/projection';
 import { isStored, isWorldId, legacyWorld, loadWorld, newWorldId, type StoredWorld, type WorldKind } from './saveStore';
+import { OWN_KEY } from './oldSite';
 import type { DraftBase, Stage } from './stageStore';
 
 export function readUrl() {
@@ -182,6 +183,7 @@ export function writeWorldUrl(t: Target) {
   q.delete('w');
   q.delete('new');
   q.delete('s');
+  q.delete(OWN_KEY);
   // 分享短链接打开的、还没存进我的世界:码留在网址里(刷新再取一次)
   if (t.shareCode && t.kind === 'visit' && !isStored(t.id)) q.set('s', t.shareCode);
   // 存着的记录还是换参数之前的(新建中换了种子、参数,正在生成):先不指向它,存好了再换成 w=

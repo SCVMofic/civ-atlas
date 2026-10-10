@@ -1,5 +1,5 @@
 /**
- * 世界概览的"世界设定"页:这个世界创建时定下的根 —— 种子、六项世界参数、改过的地形,都只能看,不能再改
+ * 世界概览的"世界设定"页:这个世界创建时定下的根 —— 种子、六项世界参数、改过的地形、地名风格,都只能看,不能再改
  * (一改三千年的历史就要整个重来)。想换个样子:"以它为底稿新建…"(回到新建这一步,设定照原样带过去,存成另一个世界)。
  * 右栏还有"回放世界形成"。
  *
@@ -12,6 +12,7 @@ import { useEdits } from './editsStore';
 import { currentWorld, useSavesVersion } from './saveStore';
 import { Icon } from './icons';
 import { genSeconds } from './genSpeed';
+import { mixSummary } from './nameMix';
 
 interface Slider {
   key: keyof WorldParams;
@@ -135,6 +136,10 @@ export function SettingsPage(p: SettingsProps) {
           <div className="ov-kv-row" data-param="terrain">
             <span>改过的地形</span>
             <b>{terrainBrief(edits.terrain, edits.sketch)}</b>
+          </div>
+          <div className="ov-kv-row" data-param="name-mix">
+            <span>地名风格</span>
+            <b>{mixSummary(edits.nameMix)}</b>
           </div>
         </div>
       </section>

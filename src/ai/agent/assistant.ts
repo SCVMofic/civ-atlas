@@ -36,13 +36,17 @@ import {
   type RewriteLock,
 } from '../prompts/rewrite';
 import type { AiMessage, AiRequest, AiToolCall, AiUsage } from '../types';
-import { runAgent, type AgentEvent, type AgentStep, type AgentTool } from './loop';
-import { compareTrial, trialText, type Fate, type FateChange, type TrialDiff, type TrialEvent } from './trial';
+import { looksUnfinished, runAgent, type AgentEvent, type AgentStep, type AgentTool } from './loop';
+import { compareTrial, trialText, trialUnchanged, type Fate, type FateChange, type TrialDiff, type TrialEvent } from './trial';
 
 /** 调用记录里的功能名 */
 export const ASSISTANT_FEATURE = '助手';
 /** 一次对话里最多试推演几次(propose_edits 顺带的那一次不算) */
 export const TRIAL_MAX = 6;
+/** 连着几次试推演都和现在一样,就提醒 AI:多半用命令做不到,别再换着法子试 */
+export const TRIAL_SAME_MAX = 3;
+/** 收尾的话像没说完时,在后面补的一句(给作者看) */
+export const UNFINISHED_NOTE = '（助手没想完就停下了。可以说「继续」，或者换个问法再问一次。）';
 /** 带上前面几轮 */
 const HISTORY_TURNS = 6;
 
@@ -130,7 +134,7 @@ export const ASSISTANT_SYSTEM = [
   '',
   REWRITE_OPS,
   '每条修改带 why:一句话(25 字以内)说为什么这样改,给作者看。',
-  'from 是整数年份,要在那个国家存在的年份里(立国当年到亡国前一年),而且早于历史的最后一年。',
+  'from 是整数年份,要在那个国家存在的年份里(立国次年到亡国前一年;写成立国那年的会挪到次年),而且早于历史的最后一年。',
   '例:{"op":"protect","country":"P3","from":2400,"until":2750,"why":"…"}、{"op":"ally","country":"P3","other":"P5","from":2400,"why":"…"}、' +
     '{"op":"rename","target":"C12","name":"…","why":"…"}、{"op":"range","path":[[10,40],[14,46]],"size":"大","why":"…"}',
 ].join('\n');
@@ -727,7 +731,20 @@ export function assistantTools(
       const watch = (Array.isArray(a.watch) ? a.watch : []).map((x) => polityOf(civ, x)).filter((id) => id >= 0);
       const t = await trial(p.items, changes, done + 1, watch, signal);
       state.trials.push(t);
-      return { result: [`第 ${t.n} 次试推演(没有执行),修改:`, itemsText(p.items), ...notes, trialText(t.diff)].join('\n'), summary: trialSummary(t.diff, subject) };
+      // 连着几次都和现在一样:提醒它别再换着法子试("让某一仗打赢"这类,命令本来就做不到)
+      let same = 0;
+      for (let i = state.trials.length - 1; i >= 0 && trialUnchanged(state.trials[i].diff); i--) same++;
+      const stuck =
+        same >= TRIAL_SAME_MAX
+          ? [
+              `已经连着 ${same} 次试推演,历史都和现在一样。作者要的结果还没出现的话,这件事多半用命令做不到:` +
+                '不要再换着法子试,直接告诉作者做不到、为什么;有接近的做法可以提一句。',
+            ]
+          : [];
+      return {
+        result: [`第 ${t.n} 次试推演(没有执行),修改:`, itemsText(p.items), ...notes, trialText(t.diff), ...stuck].join('\n'),
+        summary: trialSummary(t.diff, subject),
+      };
     },
   };
 
@@ -797,7 +814,9 @@ export async function runAssistant(ctx: AssistantContext, history: readonly Assi
     signal: opts.signal,
     onEvent: onEvent && ((e) => onEvent(e.type === 'text' ? { ...e, text: plain(e.text) } : e)),
   });
-  return { text: plain(out.text), steps: out.steps, proposal: state.proposal, trials: state.trials, end: out.end, usage: out.usage };
+  // 收尾的话像没说完("让我再查……:"):补一句,作者知道可以让它接着来
+  const text = looksUnfinished(out.text) ? `${out.text}\n\n${UNFINISHED_NOTE}` : out.text;
+  return { text: plain(text), steps: out.steps, proposal: state.proposal, trials: state.trials, end: out.end, usage: out.usage };
 }
 
 // ---------------------------------------------------------------------------

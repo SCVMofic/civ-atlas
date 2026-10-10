@@ -37,7 +37,7 @@ export function styleKey(id: MapLayer): string {
 
 export interface ThumbSource {
   data: { world: World; raster: Raster } | null;
-  /** 生成出来的文明(不含改名:缩略图只画色块) */
+  /** 生成出来的文明(不含改名:缩略图只画色块);有地形大事时是时间轴那一段的(州、宜居度和 data 的地形对得上) */
   civ: Civ | null;
   /** 取某画风的整张底图(等距圆柱,和 raster 一样大);取不到 = null */
   baseCanvas: (key: string) => HTMLCanvasElement | null;

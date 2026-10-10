@@ -59,6 +59,41 @@ button {
 .corner-tl > * {
   pointer-events: auto;
 }
+/* 左上:旧版网站一直挂着的标记(Corners.tsx 的 OldSiteBadge):和右上的毛玻璃按钮一样高 */
+.old-badge {
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 4px 0 12px;
+  font-size: 13.5px;
+  color: var(--ink);
+  white-space: nowrap;
+  text-shadow: none;
+}
+.old-badge > .icon {
+  color: var(--ink-2);
+}
+.old-badge b {
+  font-weight: 600;
+}
+.old-badge-when {
+  color: var(--ink-2);
+}
+.old-badge-go {
+  margin-left: 4px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  border-radius: 8px;
+  color: var(--accent);
+  font-weight: 500;
+  text-decoration: none;
+}
+.old-badge-go:hover {
+  background: var(--btn);
+}
 /* 顶部居中的提示条(Toast.tsx) */
 .toast {
   position: absolute;
@@ -1099,18 +1134,20 @@ body.terrain-pan .stage.terrain-on:active {
   overflow: visible;
   pointer-events: none;
 }
-/* 画出来的记号(不含 defs 里的遮罩、花纹:它们的颜色写在属性上) */
-.terrain-overlay > g * {
+/* 画出来的记号(不含 defs 里的遮罩、花纹:它们的颜色写在属性上)。
+   左右那几份是 <use> 复制出来的:复制品里只认得复制的这一组自己和它里面的 class,
+   所以记号的样式都从 .terrain-marks 往下写,不从外面的 .terrain-overlay 写(不然复制品没颜色、填成黑的) */
+.terrain-marks * {
   fill: none;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 /* 暗边 + 彩色虚线:羊皮纸、写实的深色海面上都看得清 */
-.terrain-overlay .tt-halo {
+.terrain-marks .tt-halo {
   stroke: rgba(20, 16, 12, 0.55);
   stroke-width: 4;
 }
-.terrain-overlay .tt-line {
+.terrain-marks .tt-line {
   stroke: #ffd08a;
   stroke-width: 2;
   stroke-dasharray: 6 4;
@@ -1152,7 +1189,7 @@ body.terrain-pan .stage.terrain-on:active {
   stroke: rgba(20, 16, 12, 0.4);
 }
 /* 河:亮蓝的线 */
-.terrain-overlay .tt-river {
+.terrain-marks .tt-river {
   stroke: rgba(120, 200, 255, 0.95);
   stroke-width: 4;
 }
@@ -1222,11 +1259,11 @@ body.terrain-pan .stage.terrain-on:active {
 .sk-mark.k-isles .sk-band {
   stroke: rgba(124, 200, 96, 0.16);
 }
-.terrain-overlay .sk-erasing {
+.terrain-marks .sk-erasing {
   stroke: rgba(255, 255, 255, 0.16);
 }
 /* 圈起来填满正在画的那一圈:白色虚线 + 淡淡的这支笔的颜色,终点连回起点是一道点线 */
-.terrain-overlay .sk-lasso-area {
+.terrain-marks .sk-lasso-area {
   fill: rgba(124, 200, 96, 0.22);
   stroke: #fff;
   stroke-width: 1.5;
@@ -1250,55 +1287,55 @@ body.terrain-pan .stage.terrain-on:active {
 .sk-lasso.k-erase .sk-lasso-area {
   fill: rgba(255, 255, 255, 0.12);
 }
-.terrain-overlay .sk-lasso-close {
+.terrain-marks .sk-lasso-close {
   stroke: rgba(255, 255, 255, 0.7);
   stroke-width: 1.2;
   stroke-dasharray: 2 4;
 }
 /* 导入图片(ImportImage.tsx):预览时海岸描白线(认得不像样时不描)、点过的地方是白底蓝圈的序号、保持比例时图的范围是白色虚线框 + 四角小方块,
    没盖到的地方压暗;用了以后草图里那一层的海岸是浅绿的线 */
-.terrain-overlay .imp-coast {
+.terrain-marks .imp-coast {
   stroke: rgba(255, 255, 255, 0.95);
   stroke-width: 1.6;
 }
 /* 按深浅认:海岸细一点(高低的颜色是主角) */
-.terrain-overlay .imp-coast.thin {
+.terrain-marks .imp-coast.thin {
   stroke: rgba(255, 255, 255, 0.8);
   stroke-width: 1;
 }
-.terrain-overlay .imp-dim {
+.terrain-marks .imp-dim {
   fill: rgba(0, 0, 0, 0.62);
 }
-.terrain-overlay .imp-box-halo {
+.terrain-marks .imp-box-halo {
   stroke: rgba(0, 0, 0, 0.25);
   stroke-width: 3.5;
 }
-.terrain-overlay .imp-box {
+.terrain-marks .imp-box {
   stroke: rgba(255, 255, 255, 0.9);
   stroke-width: 1.5;
   stroke-dasharray: 5 4;
 }
-.terrain-overlay .imp-corner {
+.terrain-marks .imp-corner {
   fill: #fff;
   stroke: rgba(0, 0, 0, 0.35);
   stroke-width: 1;
 }
-.terrain-overlay .imp-tag {
+.terrain-marks .imp-tag {
   fill: rgba(255, 255, 255, 0.75);
 }
-.terrain-overlay .imp-pin-shade {
+.terrain-marks .imp-pin-shade {
   fill: rgba(0, 0, 0, 0.28);
 }
-.terrain-overlay .imp-pin-dot {
+.terrain-marks .imp-pin-dot {
   fill: #fff;
   stroke: rgba(10, 132, 255, 0.9);
   stroke-width: 2;
 }
-.terrain-overlay .imp-pin text {
+.terrain-marks .imp-pin text {
   fill: #0a6cdc;
   font-weight: 700;
 }
-.terrain-overlay .sk-image-coast {
+.terrain-marks .sk-image-coast {
   stroke: rgba(184, 240, 140, 0.95);
   stroke-width: 1.5;
 }
