@@ -22,6 +22,23 @@ beforeAll(() => {
   civ = generateCiv(world);
 });
 
+/**
+ * 史事连续性不变量(types.ts 的字段表):一条 `peace` 的 `region = n > 0` 时,**紧挨在它前面**的 n 条
+ * 条条都是这场仗的 `conquer`(议和割让是**连着记**的)。`warOutcomes` 的"只认连着的一段"与 render 侧
+ * `warSpans` 的"紧挨 region 条窗口"都建立在这条不变量上;它一旦被破坏,两个规则就会分叉。
+ */
+function assertCessionInvariant(c: Civ): void {
+  const A = c.annals;
+  for (let i = 0; i < A.length; i++) {
+    const e = A[i];
+    if (e.kind !== 'peace' || e.region <= 0) continue;
+    for (let j = i - e.region; j < i; j++) {
+      if (j < 0 || A[j].kind !== 'conquer' || A[j].war !== e.war)
+        throw new Error(`peace@${i}(war ${e.war}, region ${e.region}) 前面第 ${i - j} 条不是这场仗的 conquer:${j < 0 ? '越界' : `${A[j].kind} / war ${A[j].war}`}`);
+    }
+  }
+}
+
 describe('战争结果的结构化视图', () => {
   it('与地图那侧的 warSpans 对得上(参战方、起止、易手的州)', () => {
     const outs = warOutcomes(civ);
@@ -60,6 +77,45 @@ describe('战争结果的结构化视图', () => {
     expect(ceded).toBeGreaterThan(0);
   });
 
+  it('史事连续性不变量:割让州就是紧挨在 peace 前面的那几条 conquer(真实数据)', () => {
+    expect(() => assertCessionInvariant(civ)).not.toThrow();
+    const peaces = civ.annals.filter((e) => e.kind === 'peace' && e.region > 0).length;
+    expect(peaces, 'seed 7 应有带割让的议和').toBeGreaterThan(0);
+  });
+
+  it('不变量检查本身有牙齿:人为造一条不连续的 peace 会被抓到', () => {
+    const mk = (year: number, kind: Annal['kind'], a: number, b: number, region: number, war: number): Annal => ({ year, kind, a, b, region, settlement: -1, war });
+    const bad = {
+      annals: [
+        mk(1, 'war', 0, 1, -1, 0),
+        mk(2, 'conquer', 0, 1, 10, 0),
+        mk(3, 'battle', 1, 0, 11, 0), // 中间插了别的史事
+        mk(4, 'conquer', 1, 0, 12, 0),
+        mk(4, 'peace', 0, 1, 2, 0), // 声称 2 条割让,但连着 peace 的只有 1 条
+      ],
+      polities: [{ id: 0 }, { id: 1 }],
+    } as unknown as Civ;
+    expect(() => assertCessionInvariant(bad)).toThrow();
+  });
+
+  it('和平割地与 warSpans 的窗口规则一致(交叉验证)', () => {
+    const A = civ.annals;
+    const outs = warOutcomes(civ);
+    let checked = 0;
+    for (let i = 0; i < A.length; i++) {
+      const e = A[i];
+      if (e.kind !== 'peace' || e.region <= 0) continue;
+      // render 侧 warSpans 的规则:紧挨在 peace 前面的 region 条里,同 war 的 conquer 就是割让
+      const window: number[] = [];
+      for (let j = Math.max(0, i - e.region); j < i; j++) if (A[j].kind === 'conquer' && A[j].war === e.war) window.push(A[j].region);
+      const w = outs.find((x) => x.id === e.war);
+      expect(w, `war ${e.war}`).toBeTruthy();
+      expect(w!.ceded.map((t) => t.region).sort((a, b) => a - b), `war ${e.war}`).toEqual([...window].sort((a, b) => a - b));
+      checked++;
+    }
+    expect(checked, '应有带割让的议和可供交叉验证').toBeGreaterThan(0);
+  });
+
   it('无割地的和平:ceded 为空,peace 的 region 记 −1(不生成割地记录)', () => {
     const A = civ.annals;
     let quiet = 0;
@@ -76,14 +132,14 @@ describe('战争结果的结构化视图', () => {
   it('议和割地只认紧挨在 peace 前面的那几条 conquer:中间隔了别的史事就不再往前找', () => {
     const mk = (year: number, kind: Annal['kind'], a: number, b: number, region: number, war: number): Annal => ({ year, kind, a, b, region, settlement: -1, war });
     // 早先真打下来的州(10)、中间隔一条别的史事(battle)、连着 peace 的一条真割让(12);
-    // peace 的 region 故意写 2(本该两条连着)。反向扫描若跳过中间那条继续往前找,会把 10 错认成割地。
+    // peace 的 region 故意写 3(本该三条连着)。反向扫描若跳过中间那条继续往前找,会把 10 错认成割地。
     const fake = {
       annals: [
         mk(1, 'war', 0, 1, -1, 0),
         mk(2, 'conquer', 0, 1, 10, 0),
         mk(3, 'battle', 1, 0, 11, 0),
         mk(4, 'conquer', 1, 0, 12, 0),
-        mk(4, 'peace', 0, 1, 2, 0),
+        mk(4, 'peace', 0, 1, 3, 0),
       ],
       polities: [{ id: 0 }, { id: 1 }],
     } as unknown as Civ;
@@ -91,6 +147,14 @@ describe('战争结果的结构化视图', () => {
     expect(w.ceded.map((t) => t.region)).toEqual([12]);
     expect(w.conquered.map((t) => t.region)).toEqual([10]);
     expect(w.ceded[0]).toMatchObject({ year: 4, region: 12, from: 0, to: 1 });
+    // 不变量被破坏时两个规则会分叉 —— 这正是"交叉验证"要守的:render 侧 warSpans 的窗口规则
+    // (紧挨在 peace 前面的 region 条)会把更早那条 10 也算成割让;warOutcomes 的连续扫描只认 12。
+    const A = fake.annals;
+    const i = A.findIndex((x) => x.kind === 'peace');
+    const p = A[i];
+    const window: number[] = [];
+    for (let j = Math.max(0, i - p.region); j < i; j++) if (A[j].kind === 'conquer' && A[j].war === p.war) window.push(A[j].region);
+    expect(window).toEqual([10, 12]);
   });
 
   it('亡国:这场仗里亡了哪个国家记进 fallen,与 fall 史事一致', () => {
