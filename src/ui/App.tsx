@@ -249,7 +249,7 @@ import { UpheavalHint, UpheavalOverlay } from './UpheavalPanel';
 import { dismissing, tookDismissClick } from './dismissClick';
 import { makeFlagView, setFlagView, useFlagPreview } from './flagStore';
 import { noteGenSpeed } from './genSpeed';
-import { backIfView, currentWorld as navWorld, navRestoring, onPopView, pushView, replaceNavView, replaceUrl, restoreOnStart } from './nav';
+import { currentWorld as navWorld, hasView, navRestoring, onPopView, pushView, replaceNavView, replaceUrl, restoreOnStart } from './nav';
 import { decodeSelection, encodeSelection } from './navSelection';
 import { draftSig, draftTarget, firstRoute, randomSeedValue, readUrl, storedTarget, storyOk, writeHomeUrl, writeLayerUrl, writeWorldUrl, type Target } from './route';
 
@@ -290,6 +290,17 @@ const MAP_KEEP = 2;
 const upsOpt = (u: readonly Upheaval[] | undefined) => (u?.length ? { upheavals: [...u] } : {});
 /** 推文明时带的地名风格(自动 = 不带) */
 const namesOpt = (names: NameMix | undefined) => (names ? { names } : {});
+
+/**
+ * 关闭当前面板(Esc / 点地图空白):清选中、收起概览,并把**当前历史条目**的导航描述归一化为 base ——
+ * **不新增记录**。浏览器 Back / Forward 才负责"回到上一个应用视图"(设计见 docs/phase2-navigation-design.md;
+ * Esc 的语义按维护者决定取"关面板",不是"回退一步")。
+ */
+function closePanel() {
+  clearSelection();
+  closeOverview();
+  if (hasView()) replaceNavView({ v: 'base' });
+}
 
 /** 结束那一年现存几国(我的世界的卡片上写;没长出文明 = 0) */
 function aliveAtEnd(civ: Civ): number {
@@ -2796,9 +2807,8 @@ export function App() {
     const c = cellAt(e.clientX, e.clientY);
     const r = civ && c >= 0 && c < civ.regions.of.length ? civ.regions.of[c] : -1;
     if (!civ || r < 0) {
-      // 点空白 = 关闭当前详情:有应用内导航视图就走 back(异步,由 popstate 恢复),没有就直接清
-      if (backIfView()) return;
-      return clearSelection();
+      // 点空白 = 关闭当前面板(和 Esc 一样:清选中 / 收起概览,当前条目归一化为 base,不加记录)
+      return closePanel();
     }
     // 信仰图层:点陆地 = 那里信的那个教(国名、城名照旧打开国家、城)
     if (getCivShow().faiths && civ.religion) {
@@ -2976,7 +2986,7 @@ export function App() {
       }),
     [],
   );
-  // 用户打开概览 → 新增一条历史(关闭走 backIfView / popstate,不在这里写)
+  // 用户打开概览 → 新增一条历史(关闭走 closePanel / popstate,不在这里写)
   useEffect(
     () =>
       subscribeOverview(() => {
@@ -2998,9 +3008,8 @@ export function App() {
       if (mk.placing) return stopPlacing();
       if (mk.draft) return cancelDraft();
       if (getPolityPick()) return setPolityPick(null);
-      // 有可关闭的应用内视图(详情 / 概览)→ 返回上一导航视图;已经在 base 就别把整个应用退出去
-      if (backIfView()) return;
-      clearSelection();
+      // 关闭当前面板(清选中 / 收起概览,当前条目归一化为 base,不加记录);Back / Forward 才负责回退
+      closePanel();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

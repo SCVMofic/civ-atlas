@@ -7,7 +7,8 @@
 > - 第一版:初稿。
 > - 第二版:统一详情导航语义;修正 Esc / Back 断言;补齐范围与 state 合并策略。
 > - 第三版:把"改 URL"与"改导航描述"拆成两个职责不同的接口;给出世界标识的明确定义;微调 T3/T5 措辞;把已确认的决策写死。
-> - **第四版(本版)**:① 明确"刷新时 `history.state` 不一定是 `null`",把**启动初始化规则**写完整(靠世界标识比较归一化,而不是靠 `state === null`),并加 T6 直接验证刷新后旧 state 被安全降级;② 统一 `pushView` / `replaceNavView` 的类型契约(调用方传 `NavView`,模块内部补 `world`),全文只用一套约定。
+> - **第四版**:① 明确"刷新时 `history.state` 不一定是 `null`",把**启动初始化规则**写完整(靠世界标识比较归一化,而不是靠 `state === null`),并加 T6 直接验证刷新后旧 state 被安全降级;② 统一 `pushView` / `replaceNavView` 的类型契约(调用方传 `NavView`,模块内部补 `world`),全文只用一套约定。
+> - **第五版(本版)**:实现后回归发现"Esc = 返回上一视图"会改动既有 68 处 Esc 交互(冒烟在 `replay-check.ts:696` 就挂)。维护者决定改为:**Esc = 关闭当前面板**(清选中 / 收起概览 + `replaceNavView(base)`,不新增记录),**浏览器 Back / Forward 才负责回到上一个应用视图**。§3.4 的关闭行与 §8 的 Esc 行已同步。注意:概览(`WorldOverview.tsx:76-84`)有自己的**捕获阶段** Esc 处理器并 `stopPropagation`,所以概览开着时第一次 Esc 关概览、第二次才关详情面板。
 
 ## 1. 最小复现(实测)
 
@@ -128,7 +129,7 @@ world = `${sessionNonce}:${worldId}`
 | **详情 → 另一个详情**(不同实体) | `pushView`(新增 1 条;Back 回到上一个实体) |
 | **重复打开同一实体 / 同一概览页签** | **不新增记录**(`pushView` 判定描述相同即 no-op) |
 | 概览 → 点某国打开详情 | `pushView`(新增 1 条;Back 回到概览) |
-| 关闭当前视图(Esc / 点外部 / 面板关闭键) | `history.back()`(等同浏览器 Back,回到**上一个视图**),不直接清 store |
+| 关闭当前面板(Esc / 点地图空白) | 清选中 / 收起概览,并把**当前条目**归一化为 base(`replaceNavView`,**不新增记录**)。**浏览器 Back / Forward 才负责"回到上一个视图"** |
 | 拖动地图 / 缩放 / 换图层 / 换投影 / 播放时间轴 / 悬停 / 各种菜单与对话框 | **不写历史** |
 
 由此,`base → A → B → C` 是 **3 次 push**;Back ×3 依次回到 **B、A、base**;Forward ×3 依次回到 **A、B、C**。
@@ -215,7 +216,7 @@ world = `${sessionNonce}:${worldId}`
 | T2 | 打开详情 → Back | **回到 base;仍在应用内**(`window.__wf` 存在、`location.host` 不变);世界未重载(时间轴年份、地图中心不变) |
 | T3 | 记录 `L0 = history.length`;执行 base → A → B → C;Back ×3;Forward ×3 | 执行后 `history.length === L0 + 3`(**相对 L0 增 3,不要求等于某个固定值**);Back 依次回到 **B、A、base**;Forward 依次回到 **A、B、C**;全程世界未重载 |
 | T4 | 重复打开同一实体 | `history.length` **不变**(no-op) |
-| T5 | 打开详情,记 `L1 = history.length`;按 Esc | **恢复到上一视图**(等同 Back);Esc 后 `history.length` **不再超过 `L1`**(不要求回到打开前的值,也不要求删除刚创建的那条记录);无重复 push、无导航循环 |
+| T5 | 打开详情,记 `L1 = history.length`;按 Esc | **关闭面板**(清选中 / 收起概览,当前条目归一化为 base);Esc 后 `history.length` **不再超过 `L1`**(不要求回到打开前的值,也不要求删除刚创建的那条记录);无重复 push、无导航循环 |
 | T6 | 打开详情(当前条目 state = `{ v: 'detail', …, world: 旧 }`)→ **刷新** | 回到 base;URL 不变;不崩;**刷新后当前条目的 state 变成 `{ v: 'base', world: 新 }`** —— 旧世界的 detail state 被安全降级,旧实体 id 绝不用于新世界 |
 | T7 | 打开详情 → 生成 / 打开另一个世界 → Back | **不恢复旧世界的实体**,落回 base;不报错 |
 | T8 | 全程 | 有站内前序视图时 Back 不离开站点;无重复历史项;无导航循环;无 React 状态更新警告 |
@@ -238,7 +239,7 @@ world = `${sessionNonce}:${worldId}`
 
 | 决策 | 取值 | 原因 |
 | --- | --- | --- |
-| Esc 语义 | 返回上一视图(等同 Back) | 与浏览器 Back 一致,用户更容易理解 |
+| Esc 语义 | **关闭当前面板**(清选中 / 收起概览 + 当前条目归一化为 base,不新增记录) | 保留用户熟悉的"Esc = 关面板";导航历史回退交给浏览器 Back / Forward(第五版调整,见下) |
 | 详情之间导航 | push | 符合"回看上一个实体"的需求,T3 已按此设计 |
 | 世界切换后的旧记录 | 落回 base | 不跨世界恢复实体,安全且简单 |
 | 首轮视图范围 | 仅详情与概览 | 限制实现复杂度,避免一次性协调更多独立 store |

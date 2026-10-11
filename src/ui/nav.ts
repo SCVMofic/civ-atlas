@@ -128,14 +128,3 @@ export function navRestoring(): boolean {
 export function hasView(): boolean {
   return currentView().v !== 'base';
 }
-
-/**
- * 关闭当前视图:只有当前**确实位于一个应用内视图条目**时才回退(否则 Esc 会把整个应用退出去)。
- * 返回 true = 已发起回退(**异步**:之后由 `popstate` 恢复界面,调用方不要紧接着再 setSelection(null))。
- * 返回 false = 当前没有可关闭的视图,什么都不做。
- */
-export function backIfView(): boolean {
-  if (!hasView()) return false;
-  history.back();
-  return true;
-}
