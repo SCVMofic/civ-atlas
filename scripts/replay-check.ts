@@ -1132,7 +1132,7 @@ if (fromLeft) errs.push('以它为底稿新建后什么都没动就返回,没建
 
 // 新建界面:开场放板块漂移(字幕上有年代、进度、跳过;两边面板先不出来),跳过 → 卷成地球仪、面板滑进来;
 // 「重看星球形成」= 再放一遍开场(放的时候「换一颗」「创建世界」点不了);「换一颗」:种子、网址换了,生成时顶部提示条上有进度,
-// 新星球上放一遍漂移,放完各个按钮恢复
+// 新星球上放一遍漂移,放完各个按钮恢复;帧停摆(rAF 时间戳冻住,CI 的无头 shell 上见过)时漂移有看门狗,按钮照样恢复。
 await page.goto(`${dev.url}/?new=1&seed=7&style=realistic`);
 await page.waitForFunction(() => (window as any).__wf?.ready, null, { timeout: 60000 });
 {
@@ -1167,6 +1167,40 @@ await page.waitForFunction(() => (window as any).__wf?.ready, null, { timeout: 6
   if (!genToast) errs.push('生成新世界时顶部提示条上没有进度');
   if (seed2 === '7' || !new RegExp(`[?&]seed=${seed2}(&|$)`).test(page.url())) errs.push(`点"换一颗"后种子 / 网址没变(${seed2},${page.url()})`);
   if (!replayOk) errs.push('新建界面:换一颗以后「重看星球形成」一直点不了');
+  // 回归(CI 冒烟 #9):帧停摆(rAF 的时间戳冻住)时换一颗,漂移补间走不完也不许把按钮锁死 —— 看门狗到点强制收尾。
+  // 轮询用 100ms 间隔(rAF 的回调还在,但时间戳不走,不能按帧等)
+  await page.evaluate(() => {
+    const w = window as unknown as { __raf0: typeof requestAnimationFrame; requestAnimationFrame: typeof requestAnimationFrame };
+    w.__raf0 = w.requestAnimationFrame;
+    const frozen = performance.now();
+    w.requestAnimationFrame = (cb: FrameRequestCallback) => window.setTimeout(() => cb(frozen), 16);
+  });
+  await page.click('.studio [data-act=new-seed]');
+  const genToast2 = await page.locator('.toast[data-toast=progress]').innerText({ timeout: 5000 }).catch(() => '');
+  // 输入框的种子要等 React 换上去(参数一换就更新,不用等生成完)
+  await page.waitForFunction((prev) => (document.querySelector('.nw-seed-input') as HTMLInputElement | null)?.value !== prev, seed2, { polling: 100, timeout: 15000 }).catch(() => {});
+  const seed3 = await page.locator('.nw-seed-input').inputValue();
+  // 先等这颗的漂移真的放起来(字幕出来、按钮锁上 —— 别撞上"生成完、漂移还没起"的空档),再看它能不能解锁
+  await page.waitForFunction(() => !!document.querySelector('.st-cap:not(.off)'), null, { polling: 100, timeout: 30000 }).catch(() => {});
+  await page
+    .waitForFunction(() => !document.querySelector('.studio [data-act=replay]')?.hasAttribute('disabled'), null, { polling: 100, timeout: 15000 })
+    .catch(() => {});
+  const replayOk2 = await page.evaluate(() => !(document.querySelector('.studio [data-act=replay]') as HTMLElement | null)?.hasAttribute('disabled'));
+  await page.evaluate(() => {
+    const w = window as unknown as { __raf0: typeof requestAnimationFrame; requestAnimationFrame: typeof requestAnimationFrame };
+    if (w.__raf0) w.requestAnimationFrame = w.__raf0;
+  });
+  console.log(`帧停摆时换一颗:种子 ${seed2} → ${seed3},提示条「${genToast2.replace(/\n/g, ' ')}」,重看按钮恢复 ${replayOk2}`);
+  if (!genToast2) errs.push('帧停摆时换一颗:生成提示条没出现');
+  if (seed3 === seed2) errs.push(`帧停摆时换一颗:种子没变(${seed3})`);
+  if (!replayOk2) errs.push('帧停摆时换一颗以后「重看星球形成」一直点不了(漂移补间没有看门狗收尾)');
+  // 恢复以后再点一次「重看星球形成」:要能重新触发回放,放的时候换一颗还是锁着的
+  await page.click('.studio [data-act=replay]');
+  await page.waitForTimeout(400);
+  const replaying2 = (await page.locator('.studio.intro').count()) === 1;
+  const lockedSeed2 = await page.locator('.studio [data-act=new-seed]').isDisabled();
+  await studioReady();
+  if (!replaying2 || !lockedSeed2) errs.push('换种子以后再点「重看星球形成」没有重新放开场,或放的时候还能换一颗');
 }
 
 // 第一次来(什么都没存):先到「我的世界」,中间一颗星球、一段话、「新建世界」;点了进新建界面;

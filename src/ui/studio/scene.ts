@@ -387,8 +387,12 @@ export class StudioScene {
   async playDrift(dur: number, tok: number): Promise<boolean> {
     if (!this.gl.canDrift() || this.reduce) return false;
     this.drift = 0;
-    await this.tween('drift', 1, dur, linear);
-    if (tok !== this.tok) return false;
+    // 看门狗:补间按帧走(step 里的时间戳),帧停了(后台、驱动重置、CI 的无头 shell)它永远走不完,
+    // 字幕和「换一颗 / 重看 / 创建」就锁死在那里。超过时长一点就强制收尾,锁的时间有个上界
+    await Promise.race([this.tween('drift', 1, dur, linear), this.wait(dur + 1200)]);
+    if (tok !== this.tok) return false; // 被顶掉:drift、字幕归接手的管(重放/换一颗自己放新的,跳过/创建/摊平自己收)
+    this.tweens.get('drift')?.done(); // 看门狗赢的这场:把还挂着的补间拔掉(自然走完时它已经被 step 删了)
+    this.tweens.delete('drift');
     this.drift = null;
     this.hooks.caption(1);
     return true;
@@ -465,6 +469,11 @@ export class StudioScene {
     const tok = ++this.tok;
     this.spin = false;
     this.drag = null;
+    // 正在漂移(换了一颗):停掉、字幕收掉 —— 被顶掉的 playDrift 自己不收尾(这里不是再放一场新的)
+    this.tweens.get('drift')?.done();
+    this.tweens.delete('drift');
+    this.drift = null;
+    this.hooks.caption(null);
     this.flatBack = this.projB === 'equirect' && this.flatBack !== 'equirect' ? this.flatBack : this.projB;
     if (this.projB !== 'equirect' || this.s < 1 || this.poseB) await this.setProj('equirect', 900);
     if (tok !== this.tok) return;
@@ -507,6 +516,8 @@ export class StudioScene {
     ++this.tok;
     this.spin = false;
     this.drag = null;
+    this.tweens.get('drift')?.done();
+    this.tweens.delete('drift');
     this.drift = null;
     this.hooks.caption(null);
     if (this.flatOn) {
