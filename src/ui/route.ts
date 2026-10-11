@@ -22,6 +22,7 @@ import { layerDef, layerFromUrl, type MapLayer, type Style } from './mapLayers';
 import { wrapLon } from '../render/projection';
 import { isStored, isWorldId, legacyWorld, loadWorld, newWorldId, type StoredWorld, type WorldKind } from './saveStore';
 import { OWN_KEY } from './oldSite';
+import { replaceUrl } from './nav';
 import type { DraftBase, Stage } from './stageStore';
 
 export function readUrl() {
@@ -76,7 +77,7 @@ export function writeLayerUrl(id: MapLayer) {
   if (id === 'political' && !q.has('civ')) q.delete('layer');
   else q.set('layer', id);
   const next = `?${q}`;
-  if (next !== location.search) history.replaceState(null, '', next);
+  if (next !== location.search) replaceUrl(next);
 }
 
 /** 一个要打开的世界:生成(或直接用正在看的这一个)→ 套上修改 → 交给 saveStore 自动存 */
@@ -196,7 +197,7 @@ export function writeWorldUrl(t: Target) {
   if (q.has('new')) q.delete(GEN_KEY);
   else q.set(GEN_KEY, String(t.gen !== undefined && t.gen > GENERATOR_VERSION ? t.gen : GENERATOR_VERSION));
   const next = `?${q}`;
-  if (next !== location.search) history.replaceState(null, '', next);
+  if (next !== location.search) replaceUrl(next);
 }
 
 /** 回到"我的世界":网址里去掉这个世界(种子、参数、编号、年份……),留着图层、投影这些看法 */
@@ -204,7 +205,7 @@ export function writeHomeUrl() {
   const q = new URLSearchParams(location.search);
   for (const k of [...Object.keys(DEFAULT_PARAMS), 'w', 'new', 's', GEN_KEY, 'civYear', 'play', 'chron']) q.delete(k);
   const rest = q.toString();
-  history.replaceState(null, '', rest ? `?${rest}` : location.pathname);
+  replaceUrl(rest ? `?${rest}` : location.pathname);
 }
 
 /** 创建完要不要从第 0 年起放一遍历史(网址给了 play=0、无头浏览器里不放;play=1 一定放) */

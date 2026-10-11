@@ -247,6 +247,7 @@ import { UpheavalHint, UpheavalOverlay } from './UpheavalPanel';
 import { dismissing, tookDismissClick } from './dismissClick';
 import { makeFlagView, setFlagView, useFlagPreview } from './flagStore';
 import { noteGenSpeed } from './genSpeed';
+import { replaceUrl } from './nav';
 import { draftSig, draftTarget, firstRoute, randomSeedValue, readUrl, storedTarget, storyOk, writeHomeUrl, writeLayerUrl, writeWorldUrl, type Target } from './route';
 
 /**
@@ -895,7 +896,7 @@ export function App() {
       const own = q.get(OWN_KEY) === '1';
       q.delete(OWN_KEY);
       const rest = `${q}`;
-      history.replaceState(null, '', location.pathname + (rest ? `?${rest}` : ''));
+      replaceUrl(location.pathname + (rest ? `?${rest}` : ''));
       decodeShare(init.share).then((r) => openShareRef.current(r, undefined, own));
     }
     // 邀请链接(invite=):记下邀请码,弹出登录窗(已经登录了就算了)
@@ -907,7 +908,7 @@ export function App() {
     const onHash = () => {
       const h = location.hash;
       if (!isShareHash(h)) return;
-      history.replaceState(null, '', location.pathname + location.search);
+      replaceUrl(location.pathname + location.search);
       decodeShare(h).then((r) => openShareRef.current(r));
     };
     window.addEventListener('hashchange', onHash);
@@ -1214,7 +1215,7 @@ export function App() {
       if (Math.abs(lon) >= 0.005) q.set('lon', String(lon));
       else q.delete('lon');
       const next = `?${q}`;
-      if (next !== location.search) history.replaceState(null, '', next);
+      if (next !== location.search) replaceUrl(next);
       viewChanged();
     }, 450);
     return () => clearTimeout(t);
