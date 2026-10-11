@@ -6,8 +6,8 @@
 > 修订说明:
 > - 第一版:初稿。
 > - 第二版:统一详情导航语义;修正 Esc / Back 断言;补齐范围与 state 合并策略。
-> - **第三版(本版)**:把"改 URL"与"改导航描述"拆成两个职责不同的接口;给出**世界标识的明确定义**
->   (来自哪里、何时变、何时不变、恢复时比什么);微调 T3/T5 的验收措辞;把已确认的决策写死。
+> - 第三版:把"改 URL"与"改导航描述"拆成两个职责不同的接口;给出世界标识的明确定义;微调 T3/T5 措辞;把已确认的决策写死。
+> - **第四版(本版)**:① 明确"刷新时 `history.state` 不一定是 `null`",把**启动初始化规则**写完整(靠世界标识比较归一化,而不是靠 `state === null`),并加 T6 直接验证刷新后旧 state 被安全降级;② 统一 `pushView` / `replaceNavView` 的类型契约(调用方传 `NavView`,模块内部补 `world`),全文只用一套约定。
 
 ## 1. 最小复现(实测)
 
@@ -65,19 +65,19 @@
 
 ### 3.1 三个职责分离的接口(不引依赖)
 
-新增一个小模块(例如 `src/ui/nav.ts`),**三个接口各管一件事,不混用**:
+新增一个小模块(例如 `src/ui/nav.ts`),**三个接口各管一件事,不混用**。统一契约:前两个接口接收 **`NavView`**(只含视图字段,不含 `world`),由模块内部**补上当前世界标识**再写 `NavState`;调用方不需要、也不应该自己拼 `world`。
 
-| 接口 | 职责 | 是否改 URL | 是否改导航 state | 是否新增记录 |
+| 接口(签名) | 职责 | 改 URL | 改导航 state | 新增记录 |
 | --- | --- | --- | --- | --- |
-| `pushView(desc)` | 进入一个新视图 | 否 | 是(写 `desc`) | **是**(描述相同则 no-op) |
-| `replaceNavView(desc)` | 更新**当前条目**的导航描述(如世界切换后重置为 base) | 否 | 是(原地换) | 否 |
-| `replaceUrl(next)` | 只改 URL,供现有 7 处 `replaceState` 使用 | **是** | **否(保留当前 state)** | 否 |
+| `pushView(view: NavView)` | 进入一个新视图 | 否 | 是(写入 `{ ...view, world }`) | **是**(描述相同则 no-op) |
+| `replaceNavView(view: NavView)` | 更新**当前条目**的导航描述(世界切换重置 base、启动归一化) | 否 | 是(原地换成 `{ ...view, world }`) | 否 |
+| `replaceUrl(next: string)` | 只改 URL,供现有 7 处 `replaceState` 使用 | **是** | **否(原样保留)** | 否 |
 
-- `pushView(desc)` = 若 `history.state` 与 `desc` 相同则**不做事**,否则 `history.pushState(desc, '')`。
-- `replaceNavView(desc)` = `history.replaceState(desc, '', location.href)` —— 只换 state 里的导航描述,不加记录、不动 URL 的语义。
-- `replaceUrl(next)` = `history.replaceState(history.state, '', next)` —— 只换 URL,**原样保留** `history.state`(§4)。
+- `pushView(view)` = 目标 `NavState` 与 `history.state` 相同时 no-op;否则 `history.pushState({ ...view, world: currentWorld() }, '')`。
+- `replaceNavView(view)` = `history.replaceState({ ...view, world: currentWorld() }, '', location.href)`。
+- `replaceUrl(next)` = `history.replaceState(history.state, '', next)`。
 
-> 说明:世界切换时"把当前条目重置为 base"用 **`replaceNavView`**(改描述),不是 `replaceUrl`(那只改 URL)。两个职责分开,实现者不会自己补接口。
+> 契约要点:`NavView` 是**调用方**传的(只有 `v` 等视图字段);`world` 一律由**模块内部**补。任何地方都不出现"调用方自己传 world",也不会出现"写了视图描述却漏了 world"的不一致 —— 全文只用这一套约定。
 
 ### 3.2 视图描述(可序列化的最小信息)
 
@@ -95,6 +95,7 @@ interface NavState extends NavView {
 
 - `id` 用**稳定 ID**(`polityKey` / `regionKey` / `settlementKey` / `placeKeyOf`,`src/gen/edits.ts`),不存数组下标(重推后下标会变)。
 - 描述**不含**世界参数 / 图层 / 投影 / 地图中心——那些继续由 `replaceUrl` 写进 URL。
+- **调用方只构造 `NavView`**;`world` 由 §3.1 的 `pushView` / `replaceNavView` **内部补齐**。`NavState` 只出现在 `nav.ts` 内部与 `popstate` 读取处,不出现在调用点。
 
 ### 3.3 世界标识 `world` 的明确定义
 
@@ -134,16 +135,27 @@ world = `${sessionNonce}:${worldId}`
 
 ### 3.5 Back / Forward 恢复什么
 
-- `popstate` 收到 `state`:
+- `popstate` 收到 `state`(**启动时**的恢复走 §3.6 的启动初始化规则,这里说的是运行期间):
   - `state.world !== 当前 world` → 落回 base(不解析任何 id);
   - `base` → `clearSelection()` 并关掉概览;
   - `detail` → 按 `id` 解析实体并 `setSelection`;**解析不到也落回 base,不报错**;
   - `overview` → 打开对应页签。
 - **世界与地图不在历史里**:世界数据在内存,Back 只是换面板、不重新加载世界;地图缩放 / 中心、时间轴年份、侧栏折叠、滚动位置**全部保留**。
 
-### 3.6 直接打开 / 刷新 / base 视图按 Back
+### 3.6 启动初始化 / 直接打开 / 刷新 / base 视图按 Back
 
-- 直接打开或刷新时 `history.state === null` → 视为 base;URL 语义不变(仍是世界 / 图层 / 投影),刷新回到基础视图,**与现状一致**。
+**启动初始化规则(不依赖 `history.state === null`):**
+
+刷新时浏览器**通常会保留**当前条目的 `history.state` —— 刷新前那条可能是 `{ v: 'detail', …, world: 旧 }`。所以"刷新后回 base"**不能**靠 `state === null` 判断,必须由**世界标识比较**保证。应用启动时按下面流程走:
+
+1. 读当前条目的 `history.state`(可能是 `null`,也可能是刷新前留下的**旧** `NavState`);
+2. 取出其中的 `world`,与新页面当前的 `world`(§3.3,含**本次加载新生成的 `sessionNonce`**)比较;
+3. **不一致 → 进入 base**,并调 `replaceNavView({ v: 'base' })` 把**当前条目归一化**成新的 base state(`state` 为 `null`、或不是合法 `NavState`、或 `world` 对不上,都走这条);
+4. 一致(同一页面生命周期内,没刷新)→ 可按 §3.5 恢复。
+
+因为刷新一定会重新生成 `sessionNonce`,**刷新后 `world` 必然对不上**,所以刷新一律回 base —— 这条由世界标识比较保证,而不是由 `state === null` 保证。
+
+- URL 语义不变(仍是世界 / 图层 / 投影),刷新回到基础视图,**与现状一致**。
 - **不承诺**刷新后恢复详情面板(要恢复得把视图写进 URL,属后续可选项);文档与测试写明。
 - **base 视图按 Back**:若浏览器里**没有本站的前序记录**,按 Back 会离开本站 —— 浏览器默认行为,**本设计不引入哨兵记录、不拦截 Back**,不承诺此时留在本站。要求只针对"**存在站内前序视图**"的情形(§5 T2/T3)。
 
@@ -160,7 +172,7 @@ world = `${sessionNonce}:${worldId}`
 
 **世界切换后的失效实体:**
 
-- 世界标识变化(生成新世界 / 打开另一个世界 / 读档 / 改地形重生成)时,用 **`replaceNavView({ v: 'base', world: 新标识 })`** 把**当前条目**重置为 base(不加记录)。
+- 世界标识变化(生成新世界 / 打开另一个世界 / 读档 / 改地形重生成)时,用 **`replaceNavView({ v: 'base' })`**(§3.1 内部会补上新世界标识)把**当前条目**重置为 base(不加记录)。
 - 历史里更早的记录属于旧世界:`popstate` 恢复前先比 `state.world`(§3.3),**不一致就落回 base**;即便 `world` 一致,`id` 解析不到也落回 base。两条都安全降级,不报错、不崩。
 
 ## 4. 统一 URL 改写、恢复流程不写
@@ -193,17 +205,18 @@ world = `${sessionNonce}:${worldId}`
 | U2 | `pushView` 在描述相同时 no-op(重复打开同一实体不新增记录) |
 | U3 | `id` 用稳定键;重推改变下标后仍解析得到同一实体 |
 | U4 | 世界标识:同一 worldId + 同一 nonce 相等;worldId 变则不等;nonce 变则不等 |
+| U5 | 启动恢复判定 `restoreOnStart(state, world)`:`state` 为 `null` / 非法结构 / `world` 不匹配 → 返回 `base`(并要求 `replaceNavView({v:'base'})` 归一化);`world` 匹配 → 返回该视图 |
 
 **浏览器端**(加进 `scripts/replay-check.ts` 或新脚本):
 
 | # | 场景 | 断言(确定语义) |
 | --- | --- | --- |
-| T1 | 直接打开带种子网址;再刷新 | 均为 base 视图;URL 不变;不崩。**不断言 Back 留在本站**(无站内前序记录时允许离开) |
+| T1 | 直接打开带种子网址(全新条目,`history.state` 为 `null`) | base 视图;URL 不变;不崩;启动后当前条目被**归一化**为 `{ v: 'base', world: 当前 }`。**不断言 Back 留在本站**(无站内前序记录时允许离开) |
 | T2 | 打开详情 → Back | **回到 base;仍在应用内**(`window.__wf` 存在、`location.host` 不变);世界未重载(时间轴年份、地图中心不变) |
 | T3 | 记录 `L0 = history.length`;执行 base → A → B → C;Back ×3;Forward ×3 | 执行后 `history.length === L0 + 3`(**相对 L0 增 3,不要求等于某个固定值**);Back 依次回到 **B、A、base**;Forward 依次回到 **A、B、C**;全程世界未重载 |
 | T4 | 重复打开同一实体 | `history.length` **不变**(no-op) |
 | T5 | 打开详情,记 `L1 = history.length`;按 Esc | **恢复到上一视图**(等同 Back);Esc 后 `history.length` **不再超过 `L1`**(不要求回到打开前的值,也不要求删除刚创建的那条记录);无重复 push、无导航循环 |
-| T6 | 打开详情 → 刷新 | 回到 base(URL 不变);不进入损坏状态 |
+| T6 | 打开详情(当前条目 state = `{ v: 'detail', …, world: 旧 }`)→ **刷新** | 回到 base;URL 不变;不崩;**刷新后当前条目的 state 变成 `{ v: 'base', world: 新 }`** —— 旧世界的 detail state 被安全降级,旧实体 id 绝不用于新世界 |
 | T7 | 打开详情 → 生成 / 打开另一个世界 → Back | **不恢复旧世界的实体**,落回 base;不报错 |
 | T8 | 全程 | 有站内前序视图时 Back 不离开站点;无重复历史项;无导航循环;无 React 状态更新警告 |
 
