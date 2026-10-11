@@ -1155,6 +1155,10 @@ await page.waitForFunction(() => (window as any).__wf?.ready, null, { timeout: 6
   const genToast = await page.locator('.toast[data-toast=progress]').innerText({ timeout: 5000 }).catch(() => '');
   await waitRedraw();
   const seed2 = await page.locator('.nw-seed-input').inputValue();
+  // 生成真正收尾(进度条消失 = worker 的 done 落地、数据换上 —— 和 progress 清空同一次渲染):15 秒的按钮窗口
+  // 从这里起算。waitRedraw 的记号可能被无关的重绘提前解除,窗口从它起算的话,生成慢的机器上 15 秒会落在
+  // 生成期间(按钮本来就因 !p.ready 锁着),变成假失败
+  await page.waitForFunction(() => !document.querySelector('.toast[data-toast=progress]'), null, { polling: 100, timeout: 60000 });
   await page.waitForFunction(() => !document.querySelector('.studio [data-act=replay]')?.hasAttribute('disabled'), null, { timeout: 15000 }).catch(() => {});
   const replayOk = !(await page.locator('.studio [data-act=replay]').isDisabled());
   console.log(
@@ -1166,7 +1170,15 @@ await page.waitForFunction(() => (window as any).__wf?.ready, null, { timeout: 6
   if (!replaying || !lockedSeed) errs.push('新建界面:「重看星球形成」没有重放开场,或放的时候还能换一颗');
   if (!genToast) errs.push('生成新世界时顶部提示条上没有进度');
   if (seed2 === '7' || !new RegExp(`[?&]seed=${seed2}(&|$)`).test(page.url())) errs.push(`点"换一颗"后种子 / 网址没变(${seed2},${page.url()})`);
-  if (!replayOk) errs.push('新建界面:换一颗以后「重看星球形成」一直点不了');
+  if (!replayOk) {
+    // 失败时把是谁按住按钮说清楚(字幕 / 开场 / 还在生成),下次直接从 CI 日志定位
+    const st = await page.evaluate(() => ({
+      cap: document.querySelectorAll('.st-cap:not(.off)').length,
+      intro: document.querySelectorAll('.studio.intro').length,
+      gen: !!document.querySelector('.toast[data-toast=progress]'),
+    }));
+    errs.push(`新建界面:换一颗以后「重看星球形成」一直点不了(漂移字幕 ${st.cap}、开场 ${st.intro}、还在生成 ${st.gen})`);
+  }
   // 回归(CI 冒烟 #9):把时间冻住再换一颗。rAF 的帧时间戳、performance.now(补间 t0 的来源)冻在同一个值 ——
   // 补间的 u = (now − t0) / dur 永远是 0,自然走不完,唯一出路是看门狗(dur + 1.2s 的真实 setTimeout)。
   // 只冻 rAF 不够:真实时间戳偶尔还会漏进来把补间放完,旧代码也会"碰巧"通过(假阳性),必须两个时钟一起冻。
