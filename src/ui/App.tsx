@@ -60,6 +60,7 @@ import {
   endWorldTask,
   nextSimulationVersion,
   simulationReady,
+  subscribeWorldSession,
   useWorldSession,
   worldReady,
 } from '../session/worldSession';
@@ -95,6 +96,7 @@ import {
   setSelection,
   startCivReplay,
   stepYear,
+  subscribeSelection,
   togglePlayback,
   useChronicle,
   useCivHighlight,
@@ -199,7 +201,7 @@ import { regionLabel } from '../gen/civ/display';
 import { NAME_ZOOM } from '../render/marks';
 import { collapseSide, expandSide, getSide, setSideHold, useSide } from './sideStore';
 import { getPanel, setSheet, setWorldSheet, usePanel } from './panelStore';
-import { closeOverview, getPeople, setPeople } from './overviewStore';
+import { closeOverview, getOverview, getPeople, openOverview, setPeople, subscribeOverview, type OverviewTab } from './overviewStore';
 import { STUDIO_STYLES, Studio } from './studio/Studio';
 import { setFlatGeomSource, useStudioFlat } from './studio/studioStore';
 import { MyWorlds } from './MyWorlds';
@@ -247,7 +249,8 @@ import { UpheavalHint, UpheavalOverlay } from './UpheavalPanel';
 import { dismissing, tookDismissClick } from './dismissClick';
 import { makeFlagView, setFlagView, useFlagPreview } from './flagStore';
 import { noteGenSpeed } from './genSpeed';
-import { replaceUrl } from './nav';
+import { backIfView, currentWorld as navWorld, navRestoring, onPopView, pushView, replaceNavView, replaceUrl, restoreOnStart } from './nav';
+import { decodeSelection, encodeSelection } from './navSelection';
 import { draftSig, draftTarget, firstRoute, randomSeedValue, readUrl, storedTarget, storyOk, writeHomeUrl, writeLayerUrl, writeWorldUrl, type Target } from './route';
 
 /**
@@ -2792,7 +2795,11 @@ export function App() {
     if (hit) return setSelection(hit, side);
     const c = cellAt(e.clientX, e.clientY);
     const r = civ && c >= 0 && c < civ.regions.of.length ? civ.regions.of[c] : -1;
-    if (!civ || r < 0) return clearSelection();
+    if (!civ || r < 0) {
+      // 点空白 = 关闭当前详情:有应用内导航视图就走 back(异步,由 popstate 恢复),没有就直接清
+      if (backIfView()) return;
+      return clearSelection();
+    }
     // 信仰图层:点陆地 = 那里信的那个教(国名、城名照旧打开国家、城)
     if (getCivShow().faiths && civ.religion) {
       const y = Math.min(civ.endYear, Math.max(0, getCivTime().year ?? civ.endYear));
@@ -2922,6 +2929,63 @@ export function App() {
       window.removeEventListener('wheel', pageZoom, { capture: true });
     };
   }, []);
+  // ---- 阶段 2:应用内视图 ↔ 浏览器历史(ui/nav.ts;设计见 docs/phase2-navigation-design.md)----
+  /** 打开详情要编码稳定键,得拿到当前世界的 civ(渲染时同步) */
+  const navCivRef = useRef<Civ | null>(null);
+  navCivRef.current = rawCiv;
+  // 启动归一化:当前条目可能是刷新前留下的旧记录(带旧 nonce 的 world)→ 一律落 base,并把它归一化
+  useEffect(() => {
+    replaceNavView(restoreOnStart(history.state, navWorld()));
+  }, []);
+  // 换世界 / 按新地形重新生成(worldId 变):当前条目重置为 base(不加记录);更早的旧世界记录在 Back 时被 world 比较挡掉
+  useEffect(() => {
+    let last = getWorldSession().worldId;
+    return subscribeWorldSession(() => {
+      const id = getWorldSession().worldId;
+      if (id === last) return;
+      last = id;
+      replaceNavView({ v: 'base' });
+    });
+  }, []);
+  // 浏览器后退 / 前进:只读恢复,绝不写历史
+  useEffect(
+    () =>
+      onPopView((view) => {
+        if (view.v === 'overview') return openOverview(view.tab as OverviewTab);
+        if (view.v === 'detail') {
+          const c = navCivRef.current;
+          const sel = c ? decodeSelection(c, view.kind, view.id) : null;
+          if (sel) return setSelection(sel);
+        }
+        // base,或详情键失效(实体已删除 / 重推后不存在):安全降级,不选别的实体
+        clearSelection();
+        closeOverview();
+      }),
+    [],
+  );
+  // 用户打开详情 → 新增一条历史(稳定键编码;这类没有稳定键就不进历史)
+  useEffect(
+    () =>
+      subscribeSelection(() => {
+        if (navRestoring()) return;
+        const sel = getSelection().sel;
+        const c = navCivRef.current;
+        if (!sel || !c) return;
+        const key = encodeSelection(c, sel);
+        if (key !== null) pushView({ v: 'detail', kind: sel.kind, id: key });
+      }),
+    [],
+  );
+  // 用户打开概览 → 新增一条历史(关闭走 backIfView / popstate,不在这里写)
+  useEffect(
+    () =>
+      subscribeOverview(() => {
+        if (navRestoring()) return;
+        const o = getOverview();
+        if (o.open) pushView({ v: 'overview', tab: o.tab });
+      }),
+    [],
+  );
   // Esc:先取消"在地图上点一个国家 / 城",再取消选中(在输入框里打字时不管)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -2934,6 +2998,8 @@ export function App() {
       if (mk.placing) return stopPlacing();
       if (mk.draft) return cancelDraft();
       if (getPolityPick()) return setPolityPick(null);
+      // 有可关闭的应用内视图(详情 / 概览)→ 返回上一导航视图;已经在 base 就别把整个应用退出去
+      if (backIfView()) return;
       clearSelection();
     };
     window.addEventListener('keydown', onKey);

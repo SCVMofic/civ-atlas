@@ -106,7 +106,36 @@ export function replaceUrl(next: string): void {
 
 /** 浏览器后退 / 前进:只读 state 恢复视图,**绝不写历史**(§4) */
 export function onPopView(fn: (view: NavView) => void): () => void {
-  const h = (e: PopStateEvent) => fn(restoreOnStart(e.state, currentWorld()));
+  const h = (e: PopStateEvent) => {
+    restoring = true;
+    try {
+      fn(restoreOnStart(e.state, currentWorld()));
+    } finally {
+      restoring = false;
+    }
+  };
   window.addEventListener('popstate', h);
   return () => window.removeEventListener('popstate', h);
+}
+
+/** 正在 popstate 恢复?恢复流程里 store 变化不该再 pushView(否则回环) */
+let restoring = false;
+export function navRestoring(): boolean {
+  return restoring;
+}
+
+/** 当前条目是不是一个"可关闭的应用内视图"(base = 没有) */
+export function hasView(): boolean {
+  return currentView().v !== 'base';
+}
+
+/**
+ * 关闭当前视图:只有当前**确实位于一个应用内视图条目**时才回退(否则 Esc 会把整个应用退出去)。
+ * 返回 true = 已发起回退(**异步**:之后由 `popstate` 恢复界面,调用方不要紧接着再 setSelection(null))。
+ * 返回 false = 当前没有可关闭的视图,什么都不做。
+ */
+export function backIfView(): boolean {
+  if (!hasView()) return false;
+  history.back();
+  return true;
 }
