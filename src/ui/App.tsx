@@ -93,7 +93,9 @@ import {
   setChronicle,
   takeAutoplay,
   setCivShow,
+  selectionIsInternal,
   setSelection,
+  setSelectionSilent,
   startCivReplay,
   stepYear,
   subscribeSelection,
@@ -714,12 +716,12 @@ export function App() {
               : null;
       if (key) {
         const r = resolveKey(civ, key);
-        if (r && r.kind === sel.kind) setSelection({ kind: sel.kind, id: r.id } as MapSelection);
+        if (r && r.kind === sel.kind) setSelectionSilent({ kind: sel.kind, id: r.id } as MapSelection);
         else clearSelection();
       } else if (sel.kind === 'person') {
         // 人物:同一国、同名、同年生的还在就还选着他(重推后历史变了,多半找不到了)
         const id = old.people?.[sel.id] ? resolvePersonKey(civ, personKey(old, sel.id)) : -1;
-        if (id >= 0) setSelection({ kind: 'person', id });
+        if (id >= 0) setSelectionSilent({ kind: 'person', id });
         else clearSelection();
       }
     }
@@ -748,7 +750,7 @@ export function App() {
     const r = resolveKey(shownRaw, placeKeyOf(was, sel.id));
     const id = r && r.kind === 'place' ? r.id : shownRaw.places.findIndex((q) => q.kind === p.kind && q.name === p.name);
     if (id < 0) clearSelection();
-    else if (id !== sel.id) setSelection({ kind: 'place', id });
+    else if (id !== sel.id) setSelectionSilent({ kind: 'place', id });
   }, [shownRaw]);
   /**
    * 重推好的文明换上去(阶段 4 干预):州、宜居度沿用原来那一份(地理没变;时间轴、地图按它认"还是同一个世界"),
@@ -2777,7 +2779,7 @@ export function App() {
     }
     // 双击的第二下(手指点两下时浏览器不一定数成 detail = 2):恢复第一下之前的选中
     if (e.detail >= 2 || performance.now() - dblTapAt.current < 600) {
-      setSelection(beforeClick.current);
+      setSelectionSilent(beforeClick.current);
       return;
     }
     // 干预选对象国 / 迁都选城(阶段 4):点到的国家 / 城交给干预区,不改选中
@@ -2973,11 +2975,12 @@ export function App() {
       }),
     [],
   );
-  // 用户打开详情 → 新增一条历史(稳定键编码;这类没有稳定键就不进历史)
+  // 用户打开详情 → 新增一条历史(稳定键编码;这类没有稳定键就不进历史)。
+  // **内部更新不算**:重推 remap、时间轴换段重解析、助手预览自动选中都走 setSelectionSilent。
   useEffect(
     () =>
       subscribeSelection(() => {
-        if (navRestoring()) return;
+        if (navRestoring() || selectionIsInternal()) return;
         const sel = getSelection().sel;
         const c = navCivRef.current;
         if (!sel || !c) return;
@@ -3213,7 +3216,7 @@ export function App() {
     const id = v && v.focus > 0 ? v.rows[0].id : -1;
     if (id < 0 || !real.polities[id]) return;
     const r = resolveKey(previewRaw, polityKey(real, id));
-    if (r && r.kind === 'polity') setSelection({ kind: 'polity', id: r.id });
+    if (r && r.kind === 'polity') setSelectionSilent({ kind: 'polity', id: r.id });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [previewRaw]);
   // 详情面板只挂一份:挂进一个自己建的容器,窄屏把容器放在底部卡片的位置,宽屏放进侧栏(放哪儿由那边的空位 ref 决定)。

@@ -306,10 +306,31 @@ export function getSelection(): SelectionState {
   return selection.get();
 }
 
+/**
+ * 内部更新标记:重推 remap、时间轴换段重新解析、助手预览自动选中这类**不是用户主动打开详情**的选中变化。
+ * nav 的订阅器读它,决定不写历史(阶段 2 审查:内部状态更新不创建导航记录)。
+ */
+let internal = false;
+
 /** 选中一个东西;side 不给 = 面板留在原来那一边。选中新的东西(看详情)时暂停播放 */
 export function setSelection(sel: MapSelection | null, side?: 'left' | 'right') {
   if (sel && !sameSelection(sel, selection.get().sel)) pausePlayback();
   selection.set(side ? { sel, side } : { sel });
+}
+
+/** 同 `setSelection`,但标记为**内部更新**(不当作"用户打开详情",nav 不据此写历史) */
+export function setSelectionSilent(sel: MapSelection | null, side?: 'left' | 'right') {
+  internal = true;
+  try {
+    setSelection(sel, side);
+  } finally {
+    internal = false;
+  }
+}
+
+/** 这次 selection 变化是不是内部更新(只在 setSelection 同步通知期间为 true) */
+export function selectionIsInternal(): boolean {
+  return internal;
 }
 
 export function clearSelection() {

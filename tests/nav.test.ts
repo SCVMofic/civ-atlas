@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { restoreOnStart, sameNavEntry, sameView, worldOf, type NavState, type NavView } from '../src/ui/nav';
+import { selectionIsInternal, setSelection, setSelectionSilent, subscribeSelection } from '../src/ui/civView';
 
 const D = (kind: string, id: string): NavView => ({ v: 'detail', kind, id });
 const O = (tab: string): NavView => ({ v: 'overview', tab });
@@ -43,6 +44,21 @@ describe('世界标识(U4)', () => {
     expect(worldOf('n1', 3)).toBe(worldOf('n1', 3));
     expect(worldOf('n1', 3)).not.toBe(worldOf('n1', 4));
     expect(worldOf('n1', 3)).not.toBe(worldOf('n2', 3));
+  });
+});
+
+describe('内部选中更新(U6)', () => {
+  it('setSelection = 用户打开;setSelectionSilent = 内部更新(nav 据此不写历史)', () => {
+    const seen: boolean[] = [];
+    const off = subscribeSelection(() => seen.push(selectionIsInternal()));
+    setSelection({ kind: 'polity', id: 0 }); // 用户
+    setSelectionSilent({ kind: 'polity', id: 1 }); // 内部
+    setSelectionSilent({ kind: 'region', id: 2 }); // 内部
+    setSelection({ kind: 'region', id: 3 }); // 用户
+    off();
+    expect(seen).toEqual([false, true, true, false]);
+    // 标记只在同步通知期间为真,通知外是 false
+    expect(selectionIsInternal()).toBe(false);
   });
 });
 

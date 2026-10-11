@@ -299,6 +299,50 @@ const openOverviewTab = async (p: Page) => {
 }
 
 
+// ---- T14:时间轴换年份(内部重解析)不新增历史条目 ----
+{
+  const p = await fresh();
+  await p.evaluate(() => (window as unknown as { __wfSelect: (k: string, id: number) => void }).__wfSelect('place', 0));
+  await p.waitForTimeout(400);
+  const l1 = (await nav(p)).len;
+  const v1 = (await nav(p)).v;
+  for (let i = 0; i < 3; i++) {
+    await p.keyboard.press('ArrowLeft');
+    await p.waitForTimeout(250);
+  }
+  const s = await nav(p);
+  check(s.len === l1, `T14 改时间轴年份不该新增历史条目(${l1} → ${s.len})`);
+  check(s.v === v1, `T14 改年份后当前条目不变(${v1} → ${s.v})`);
+  console.log(`T14 改年份:len ${l1} → ${s.len},v ${v1} → ${s.v}`);
+  await p.close();
+}
+
+// ---- T15:重推(内部 remap)不新增历史条目 ----
+{
+  const p = await fresh();
+  await openDetail(p, 0);
+  const l1 = (await nav(p)).len;
+  await p.locator('.inspector [data-act=intervene]').click();
+  await p.waitForTimeout(450);
+  const prev = await p.evaluate(() => (window as unknown as { __wfResim?: { seq: number } }).__wfResim?.seq ?? 0);
+  // 找第一个"立即生效"且没被禁用的命令(带"选择对象"的会要再选,不算)
+  const btn = p.locator('.cp-cmd:not(.off)').filter({ hasText: '立即生效' }).first();
+  const n = await btn.count();
+  check(n > 0, `T15 没找到可立即生效的干预命令`);
+  if (n > 0) {
+    await btn.click();
+    await p
+      .waitForFunction((s) => ((window as unknown as { __wfResim?: { seq: number } }).__wfResim?.seq ?? 0) > s, prev, { timeout: 25000 })
+      .catch(() => null);
+    await p.waitForTimeout(450);
+    const s = await nav(p);
+    check(s.len <= l1, `T15 重推(内部 remap)不该新增历史条目(${l1} → ${s.len})`);
+    console.log(`T15 重推:len ${l1} → ${s.len},v=${s.v},panel=${s.panel}`);
+  }
+  await p.close();
+}
+
+
 // ---- T8:全程无 console / pageerror(在 errs 里累积) ----
 check(errs.length === 0, `T8 全程不该有 console / pageerror(已有 ${errs.length} 条)`);
 
