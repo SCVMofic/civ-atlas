@@ -1,0 +1,250 @@
+/**
+ * 战争结果的结构化派生视图(阶段 1a,gen/civ/warOutcome.ts):
+ * 只用 war / conquer / peace / fall 史事,把每一场仗的参战方、亡国、割让地区(带前后归属)、打下的州整理出来。
+ * 与地图那侧的 warSpans 交叉核对(防止两份推导漂移),与编年史的战争条目一致。不改推演、不改存档。
+ */
+import { beforeAll, describe, expect, it } from 'vitest';
+import { DEFAULT_PARAMS, generateWorld, type World } from '../src/gen/world';
+import { generateCiv, type Civ } from '../src/gen/civ';
+import type { Annal } from '../src/gen/civ/types';
+import { ownersAt } from '../src/gen/civ/timeline';
+import { buildChronicle } from '../src/gen/civ/chronicle';
+import { canCross } from '../src/gen/civ/polities';
+import { polityKey } from '../src/gen/edits';
+import { warOutcomes } from '../src/gen/civ/warOutcome';
+import { warSpans } from '../src/render/civ/warfare';
+
+let world: World;
+let civ: Civ;
+
+beforeAll(() => {
+  world = generateWorld({ ...DEFAULT_PARAMS, seed: 7, cells: 12000 });
+  civ = generateCiv(world);
+});
+
+/**
+ * 史事连续性不变量(types.ts 的字段表):一条 `peace` 的 `region = n > 0` 时,**紧挨在它前面**的 n 条
+ * 条条都是这场仗的 `conquer`(议和割让是**连着记**的)。`warOutcomes` 的"只认连着的一段"与 render 侧
+ * `warSpans` 的"紧挨 region 条窗口"都建立在这条不变量上;它一旦被破坏,两个规则就会分叉。
+ */
+function assertCessionInvariant(c: Civ): void {
+  const A = c.annals;
+  for (let i = 0; i < A.length; i++) {
+    const e = A[i];
+    if (e.kind !== 'peace' || e.region <= 0) continue;
+    for (let j = i - e.region; j < i; j++) {
+      if (j < 0 || A[j].kind !== 'conquer' || A[j].war !== e.war)
+        throw new Error(`peace@${i}(war ${e.war}, region ${e.region}) 前面第 ${i - j} 条不是这场仗的 conquer:${j < 0 ? '越界' : `${A[j].kind} / war ${A[j].war}`}`);
+    }
+  }
+}
+
+describe('战争结果的结构化视图', () => {
+  it('与地图那侧的 warSpans 对得上(参战方、起止、易手的州)', () => {
+    const outs = warOutcomes(civ);
+    const spans = warSpans(civ);
+    expect(outs.length).toBeGreaterThan(3);
+    expect(outs.length).toBe(spans.length);
+    for (const w of outs) {
+      const s = spans.find((x) => x.id === w.id);
+      expect(s, `war ${w.id}`).toBeTruthy();
+      expect(w.atk).toBe(s!.atk);
+      expect(w.def).toBe(s!.def);
+      expect(w.start).toBe(s!.start);
+      expect(w.end).toBe(s!.end);
+      // 割让 + 打下来的州 = 这场仗易手过的州(warSpans.taken 就是全部 conquer)
+      expect(new Set([...w.conquered, ...w.ceded].map((t) => t.region))).toEqual(new Set(s!.taken.map((t) => t.region)));
+    }
+  });
+
+  it('和平割地:前后归属与史事一致,条数 = peace 记的割让州数', () => {
+    const A = civ.annals;
+    let wars = 0;
+    let ceded = 0;
+    for (const w of warOutcomes(civ)) {
+      if (!w.ceded.length) continue;
+      wars++;
+      const p = [...A].reverse().find((e) => e.kind === 'peace' && e.war === w.id);
+      expect(p, `war ${w.id} 有割让却没有 peace`).toBeTruthy();
+      expect(w.ceded.length).toBe(p!.region);
+      for (const t of w.ceded) {
+        // 每笔割让都能在史事里找到那条 conquer:得方 a = to,原主 b = from
+        expect(A.some((e) => e.kind === 'conquer' && e.war === w.id && e.region === t.region && e.a === t.to && e.b === t.from)).toBe(true);
+        ceded++;
+      }
+    }
+    expect(wars).toBeGreaterThan(0);
+    expect(ceded).toBeGreaterThan(0);
+  });
+
+  it('史事连续性不变量:割让州就是紧挨在 peace 前面的那几条 conquer(真实数据)', () => {
+    expect(() => assertCessionInvariant(civ)).not.toThrow();
+    const peaces = civ.annals.filter((e) => e.kind === 'peace' && e.region > 0).length;
+    expect(peaces, 'seed 7 应有带割让的议和').toBeGreaterThan(0);
+  });
+
+  it('不变量检查本身有牙齿:人为造一条不连续的 peace 会被抓到', () => {
+    const mk = (year: number, kind: Annal['kind'], a: number, b: number, region: number, war: number): Annal => ({ year, kind, a, b, region, settlement: -1, war });
+    const bad = {
+      annals: [
+        mk(1, 'war', 0, 1, -1, 0),
+        mk(2, 'conquer', 0, 1, 10, 0),
+        mk(3, 'battle', 1, 0, 11, 0), // 中间插了别的史事
+        mk(4, 'conquer', 1, 0, 12, 0),
+        mk(4, 'peace', 0, 1, 2, 0), // 声称 2 条割让,但连着 peace 的只有 1 条
+      ],
+      polities: [{ id: 0 }, { id: 1 }],
+    } as unknown as Civ;
+    expect(() => assertCessionInvariant(bad)).toThrow();
+  });
+
+  it('和平割地与 warSpans 的窗口规则一致(交叉验证)', () => {
+    const A = civ.annals;
+    const outs = warOutcomes(civ);
+    let checked = 0;
+    for (let i = 0; i < A.length; i++) {
+      const e = A[i];
+      if (e.kind !== 'peace' || e.region <= 0) continue;
+      // render 侧 warSpans 的规则:紧挨在 peace 前面的 region 条里,同 war 的 conquer 就是割让
+      const window: number[] = [];
+      for (let j = Math.max(0, i - e.region); j < i; j++) if (A[j].kind === 'conquer' && A[j].war === e.war) window.push(A[j].region);
+      const w = outs.find((x) => x.id === e.war);
+      expect(w, `war ${e.war}`).toBeTruthy();
+      expect(w!.ceded.map((t) => t.region).sort((a, b) => a - b), `war ${e.war}`).toEqual([...window].sort((a, b) => a - b));
+      checked++;
+    }
+    expect(checked, '应有带割让的议和可供交叉验证').toBeGreaterThan(0);
+  });
+
+  it('无割地的和平:ceded 为空,peace 的 region 记 −1(不生成割地记录)', () => {
+    const A = civ.annals;
+    let quiet = 0;
+    for (const w of warOutcomes(civ)) {
+      if (w.end === Infinity || w.ceded.length) continue;
+      const p = A.find((e) => e.kind === 'peace' && e.war === w.id);
+      if (!p) continue; // 亡国结束的仗没有 peace
+      expect(p.region).toBe(-1);
+      quiet++;
+    }
+    expect(quiet).toBeGreaterThan(0);
+  });
+
+  it('议和割地只认紧挨在 peace 前面的那几条 conquer:中间隔了别的史事就不再往前找', () => {
+    const mk = (year: number, kind: Annal['kind'], a: number, b: number, region: number, war: number): Annal => ({ year, kind, a, b, region, settlement: -1, war });
+    // 早先真打下来的州(10)、中间隔一条别的史事(battle)、连着 peace 的一条真割让(12);
+    // peace 的 region 故意写 3(本该三条连着)。反向扫描若跳过中间那条继续往前找,会把 10 错认成割地。
+    const fake = {
+      annals: [
+        mk(1, 'war', 0, 1, -1, 0),
+        mk(2, 'conquer', 0, 1, 10, 0),
+        mk(3, 'battle', 1, 0, 11, 0),
+        mk(4, 'conquer', 1, 0, 12, 0),
+        mk(4, 'peace', 0, 1, 3, 0),
+      ],
+      polities: [{ id: 0 }, { id: 1 }],
+    } as unknown as Civ;
+    const w = warOutcomes(fake)[0];
+    expect(w.ceded.map((t) => t.region)).toEqual([12]);
+    expect(w.conquered.map((t) => t.region)).toEqual([10]);
+    expect(w.ceded[0]).toMatchObject({ year: 4, region: 12, from: 0, to: 1 });
+    // 不变量被破坏时两个规则会分叉 —— 这正是"交叉验证"要守的:render 侧 warSpans 的窗口规则
+    // (紧挨在 peace 前面的 region 条)会把更早那条 10 也算成割让;warOutcomes 的连续扫描只认 12。
+    const A = fake.annals;
+    const i = A.findIndex((x) => x.kind === 'peace');
+    const p = A[i];
+    const window: number[] = [];
+    for (let j = Math.max(0, i - p.region); j < i; j++) if (A[j].kind === 'conquer' && A[j].war === p.war) window.push(A[j].region);
+    expect(window).toEqual([10, 12]);
+  });
+
+  it('亡国:这场仗里亡了哪个国家记进 fallen,与 fall 史事一致', () => {
+    const A = civ.annals;
+    let checked = 0;
+    for (const w of warOutcomes(civ)) {
+      for (const f of w.fallen) {
+        expect(A.some((e) => e.kind === 'fall' && e.war === w.id && e.year === f.year && e.a === f.polity && e.b === f.by)).toBe(true);
+        checked++;
+      }
+    }
+    expect(checked).toBeGreaterThan(0);
+  });
+
+  it('编年史与结构化结果一致:一场仗正好一条战争条目,参战方与事发州对得上', () => {
+    const entries = buildChronicle(civ).filter((e) => e.kind === 'war');
+    const A = civ.annals;
+    for (const w of warOutcomes(civ)) {
+      // 编年史按 war 列分组,条目的 id = 这一组第一条史事的下标(= 宣战那条)
+      const first = A.findIndex((e) => e.kind === 'war' && e.war === w.id);
+      const entry = entries.find((e) => e.id === first);
+      expect(entry, `war ${w.id}`).toBeTruthy();
+      expect(entry!.polities).toContain(w.atk);
+      expect(entry!.polities).toContain(w.def);
+      // 易手的州都在条目的事发地里;有易手时条目的事发地就是这些州
+      // (一州没打下来/没割让的仗,条目的事发地是没打下来的那几仗的战场,结构化视图不管这个)
+      const regions = new Set([...w.conquered, ...w.ceded].map((t) => t.region));
+      for (const r of regions) expect(entry!.regions).toContain(r);
+      if (regions.size) expect(new Set(entry!.regions)).toEqual(regions);
+    }
+  });
+
+  it('援盟:war 史事的 settlement 列在结构化视图里记成 joinedFor', () => {
+    let outs: ReturnType<typeof warOutcomes> | null = null;
+    let joins: Annal[] = [];
+    let allyZ = -1;
+    let allyY = -1;
+    let alliedFrom = Infinity;
+    for (const seed of [7, 2024]) {
+      const baseCiv = seed === 7 ? civ : generateCiv(generateWorld({ ...DEFAULT_PARAMS, seed }));
+      const reg = baseCiv.regions;
+      for (const e of baseCiv.annals) {
+        if (e.kind !== 'war' || e.year < 1000) continue;
+        const y0 = Math.floor(e.year);
+        if (e.year === y0 || baseCiv.polities[e.b].founded >= y0 - 1) continue;
+        const own = ownersAt(baseCiv, y0 - 0.01).polity;
+        const border = (a: number, b: number) => {
+          const P = baseCiv.polities[a];
+          for (let r = 0; r < reg.count; r++) {
+            if (own[r] !== a) continue;
+            for (let k = reg.adjStart[r]; k < reg.adjStart[r + 1]; k++) if (own[reg.adj[k]] === b && canCross(P, reg.adjKind[k])) return true;
+          }
+          return false;
+        };
+        // 守方 e.b 和一个同时挨着攻方 e.a 的邻国 z 在年初结盟
+        const z = baseCiv.polities.find(
+          (q) => q.id !== e.a && q.id !== e.b && q.founded < y0 - 1 && (q.ended ?? Infinity) > e.year && own.includes(q.id) && border(q.id, e.b) && border(q.id, e.a),
+        )?.id;
+        if (z === undefined) continue;
+        const gen = generateCiv(generateWorld({ ...DEFAULT_PARAMS, seed }), { interventions: [{ kind: 'ally', a: polityKey(baseCiv, z), b: polityKey(baseCiv, e.b), from: y0 }] });
+        const j = gen.annals.filter((x) => x.kind === 'war' && x.settlement >= 0);
+        if (j.length) {
+          outs = warOutcomes(gen);
+          joins = j;
+          allyZ = z;
+          allyY = e.b;
+          alliedFrom = y0;
+          break;
+        }
+      }
+      if (outs) break;
+    }
+    expect(outs, '没找到援盟的场景').toBeTruthy();
+    expect(joins.length).toBeGreaterThan(0);
+    for (const e of joins) {
+      const w = outs!.find((x) => x.id === e.war)!;
+      expect(w.joinedFor).toBe(e.settlement);
+      expect(w.atk).toBe(e.a);
+      expect(w.def).toBe(e.b);
+    }
+    // 不是援盟的仗 joinedFor 是 null
+    expect(outs!.some((w) => w.joinedFor === null)).toBe(true);
+    // 结盟影响决策:结盟以后,盟国之间不再出现互为攻守的仗(结构化视图里也看得见)
+    for (const w of outs!) {
+      if (w.start < alliedFrom || w.joinedFor !== null) continue;
+      expect(new Set([w.atk, w.def])).not.toEqual(new Set([allyZ, allyY]));
+    }
+  }, 180_000);
+
+  it('没有史事时不崩:返回空数组', () => {
+    expect(warOutcomes({ ...civ, annals: [] })).toEqual([]);
+  });
+});
