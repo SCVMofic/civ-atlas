@@ -17,7 +17,7 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# 三个任务并行跑,总时长 ≈ 最慢的那个(冒烟)
+# 四个任务并行跑,总时长 ≈ 最慢的那个(冒烟)
 jobs:
   # 每天的兜底:最近一天 main 上有没有代码改动(文档不算)
   changed:
@@ -89,6 +89,36 @@ jobs:
         run: pnpm exec playwright install --with-deps --only-shell chromium
       - name: 冒烟测试(页面加载 / 回放 / 悬停 / 各界面流程)
         run: pnpm smoke
+
+  nav:
+    name: 导航(后退 / 前进)
+    needs: changed
+    if: ${{ !cancelled() && (github.event_name != 'schedule' || needs.changed.outputs.any == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: 读取 Playwright 版本
+        id: pw
+        run: echo "version=$(pnpm exec playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+      # 浏览器按 Playwright 版本缓存;升级 Playwright 时自动重新下载
+      - name: 缓存无头浏览器
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-shell
+      - name: 安装无头浏览器(缓存未命中时)
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: pnpm exec playwright install --with-deps --only-shell chromium
+      - name: 导航检查(浏览器后退 / 前进、Esc、刷新、换世界、内部 remap)
+        run: pnpm navcheck
 
   visual:
     name: 画面回归
