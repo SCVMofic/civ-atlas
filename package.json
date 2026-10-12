@@ -14,6 +14,7 @@
     "snap": "tsx scripts/snap.ts",
     "stress": "tsx scripts/stress.ts",
     "smoke": "tsx scripts/replay-check.ts",
+    "navcheck": "tsx scripts/nav-check.ts",
     "test:visual": "tsx scripts/visual-check.ts"
   },
   "dependencies": {

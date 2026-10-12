@@ -60,6 +60,7 @@ import {
   endWorldTask,
   nextSimulationVersion,
   simulationReady,
+  subscribeWorldSession,
   useWorldSession,
   worldReady,
 } from '../session/worldSession';
@@ -92,9 +93,12 @@ import {
   setChronicle,
   takeAutoplay,
   setCivShow,
+  selectionIsInternal,
   setSelection,
+  setSelectionSilent,
   startCivReplay,
   stepYear,
+  subscribeSelection,
   togglePlayback,
   useChronicle,
   useCivHighlight,
@@ -199,7 +203,7 @@ import { regionLabel } from '../gen/civ/display';
 import { NAME_ZOOM } from '../render/marks';
 import { collapseSide, expandSide, getSide, setSideHold, useSide } from './sideStore';
 import { getPanel, setSheet, setWorldSheet, usePanel } from './panelStore';
-import { closeOverview, getPeople, setPeople } from './overviewStore';
+import { closeOverview, getOverview, getPeople, openOverview, setPeople, subscribeOverview, type OverviewTab } from './overviewStore';
 import { STUDIO_STYLES, Studio } from './studio/Studio';
 import { setFlatGeomSource, useStudioFlat } from './studio/studioStore';
 import { MyWorlds } from './MyWorlds';
@@ -247,6 +251,8 @@ import { UpheavalHint, UpheavalOverlay } from './UpheavalPanel';
 import { dismissing, tookDismissClick } from './dismissClick';
 import { makeFlagView, setFlagView, useFlagPreview } from './flagStore';
 import { noteGenSpeed } from './genSpeed';
+import { currentWorld as navWorld, hasView, navRestoring, onPopView, pushView, replaceNavView, replaceUrl, restoreOnStart } from './nav';
+import { decodeSelection, encodeSelection } from './navSelection';
 import { draftSig, draftTarget, firstRoute, randomSeedValue, readUrl, storedTarget, storyOk, writeHomeUrl, writeLayerUrl, writeWorldUrl, type Target } from './route';
 
 /**
@@ -286,6 +292,17 @@ const MAP_KEEP = 2;
 const upsOpt = (u: readonly Upheaval[] | undefined) => (u?.length ? { upheavals: [...u] } : {});
 /** 推文明时带的地名风格(自动 = 不带) */
 const namesOpt = (names: NameMix | undefined) => (names ? { names } : {});
+
+/**
+ * 关闭当前面板(Esc / 点地图空白):清选中、收起概览,并把**当前历史条目**的导航描述归一化为 base ——
+ * **不新增记录**。浏览器 Back / Forward 才负责"回到上一个应用视图"(设计见 docs/phase2-navigation-design.md;
+ * Esc 的语义按维护者决定取"关面板",不是"回退一步")。
+ */
+function closePanel() {
+  clearSelection();
+  closeOverview();
+  if (hasView()) replaceNavView({ v: 'base' });
+}
 
 /** 结束那一年现存几国(我的世界的卡片上写;没长出文明 = 0) */
 function aliveAtEnd(civ: Civ): number {
@@ -699,12 +716,12 @@ export function App() {
               : null;
       if (key) {
         const r = resolveKey(civ, key);
-        if (r && r.kind === sel.kind) setSelection({ kind: sel.kind, id: r.id } as MapSelection);
+        if (r && r.kind === sel.kind) setSelectionSilent({ kind: sel.kind, id: r.id } as MapSelection);
         else clearSelection();
       } else if (sel.kind === 'person') {
         // 人物:同一国、同名、同年生的还在就还选着他(重推后历史变了,多半找不到了)
         const id = old.people?.[sel.id] ? resolvePersonKey(civ, personKey(old, sel.id)) : -1;
-        if (id >= 0) setSelection({ kind: 'person', id });
+        if (id >= 0) setSelectionSilent({ kind: 'person', id });
         else clearSelection();
       }
     }
@@ -733,7 +750,7 @@ export function App() {
     const r = resolveKey(shownRaw, placeKeyOf(was, sel.id));
     const id = r && r.kind === 'place' ? r.id : shownRaw.places.findIndex((q) => q.kind === p.kind && q.name === p.name);
     if (id < 0) clearSelection();
-    else if (id !== sel.id) setSelection({ kind: 'place', id });
+    else if (id !== sel.id) setSelectionSilent({ kind: 'place', id });
   }, [shownRaw]);
   /**
    * 重推好的文明换上去(阶段 4 干预):州、宜居度沿用原来那一份(地理没变;时间轴、地图按它认"还是同一个世界"),
@@ -895,7 +912,7 @@ export function App() {
       const own = q.get(OWN_KEY) === '1';
       q.delete(OWN_KEY);
       const rest = `${q}`;
-      history.replaceState(null, '', location.pathname + (rest ? `?${rest}` : ''));
+      replaceUrl(location.pathname + (rest ? `?${rest}` : ''));
       decodeShare(init.share).then((r) => openShareRef.current(r, undefined, own));
     }
     // 邀请链接(invite=):记下邀请码,弹出登录窗(已经登录了就算了)
@@ -907,7 +924,7 @@ export function App() {
     const onHash = () => {
       const h = location.hash;
       if (!isShareHash(h)) return;
-      history.replaceState(null, '', location.pathname + location.search);
+      replaceUrl(location.pathname + location.search);
       decodeShare(h).then((r) => openShareRef.current(r));
     };
     window.addEventListener('hashchange', onHash);
@@ -1214,7 +1231,7 @@ export function App() {
       if (Math.abs(lon) >= 0.005) q.set('lon', String(lon));
       else q.delete('lon');
       const next = `?${q}`;
-      if (next !== location.search) history.replaceState(null, '', next);
+      if (next !== location.search) replaceUrl(next);
       viewChanged();
     }, 450);
     return () => clearTimeout(t);
@@ -2762,7 +2779,7 @@ export function App() {
     }
     // 双击的第二下(手指点两下时浏览器不一定数成 detail = 2):恢复第一下之前的选中
     if (e.detail >= 2 || performance.now() - dblTapAt.current < 600) {
-      setSelection(beforeClick.current);
+      setSelectionSilent(beforeClick.current);
       return;
     }
     // 干预选对象国 / 迁都选城(阶段 4):点到的国家 / 城交给干预区,不改选中
@@ -2791,7 +2808,10 @@ export function App() {
     if (hit) return setSelection(hit, side);
     const c = cellAt(e.clientX, e.clientY);
     const r = civ && c >= 0 && c < civ.regions.of.length ? civ.regions.of[c] : -1;
-    if (!civ || r < 0) return clearSelection();
+    if (!civ || r < 0) {
+      // 点空白 = 关闭当前面板(和 Esc 一样:清选中 / 收起概览,当前条目归一化为 base,不加记录)
+      return closePanel();
+    }
     // 信仰图层:点陆地 = 那里信的那个教(国名、城名照旧打开国家、城)
     if (getCivShow().faiths && civ.religion) {
       const y = Math.min(civ.endYear, Math.max(0, getCivTime().year ?? civ.endYear));
@@ -2921,6 +2941,64 @@ export function App() {
       window.removeEventListener('wheel', pageZoom, { capture: true });
     };
   }, []);
+  // ---- 阶段 2:应用内视图 ↔ 浏览器历史(ui/nav.ts;设计见 docs/phase2-navigation-design.md)----
+  /** 打开详情要编码稳定键,得拿到当前世界的 civ(渲染时同步) */
+  const navCivRef = useRef<Civ | null>(null);
+  navCivRef.current = rawCiv;
+  // 启动归一化:当前条目可能是刷新前留下的旧记录(带旧 nonce 的 world)→ 一律落 base,并把它归一化
+  useEffect(() => {
+    replaceNavView(restoreOnStart(history.state, navWorld()));
+  }, []);
+  // 换世界 / 按新地形重新生成(worldId 变):当前条目重置为 base(不加记录);更早的旧世界记录在 Back 时被 world 比较挡掉
+  useEffect(() => {
+    let last = getWorldSession().worldId;
+    return subscribeWorldSession(() => {
+      const id = getWorldSession().worldId;
+      if (id === last) return;
+      last = id;
+      replaceNavView({ v: 'base' });
+    });
+  }, []);
+  // 浏览器后退 / 前进:只读恢复,绝不写历史
+  useEffect(
+    () =>
+      onPopView((view) => {
+        if (view.v === 'overview') return openOverview(view.tab as OverviewTab);
+        if (view.v === 'detail') {
+          const c = navCivRef.current;
+          const sel = c ? decodeSelection(c, view.kind, view.id) : null;
+          if (sel) return setSelection(sel);
+        }
+        // base,或详情键失效(实体已删除 / 重推后不存在):安全降级,不选别的实体
+        clearSelection();
+        closeOverview();
+      }),
+    [],
+  );
+  // 用户打开详情 → 新增一条历史(稳定键编码;这类没有稳定键就不进历史)。
+  // **内部更新不算**:重推 remap、时间轴换段重解析、助手预览自动选中都走 setSelectionSilent。
+  useEffect(
+    () =>
+      subscribeSelection(() => {
+        if (navRestoring() || selectionIsInternal()) return;
+        const sel = getSelection().sel;
+        const c = navCivRef.current;
+        if (!sel || !c) return;
+        const key = encodeSelection(c, sel);
+        if (key !== null) pushView({ v: 'detail', kind: sel.kind, id: key });
+      }),
+    [],
+  );
+  // 用户打开概览 → 新增一条历史(关闭走 closePanel / popstate,不在这里写)
+  useEffect(
+    () =>
+      subscribeOverview(() => {
+        if (navRestoring()) return;
+        const o = getOverview();
+        if (o.open) pushView({ v: 'overview', tab: o.tab });
+      }),
+    [],
+  );
   // Esc:先取消"在地图上点一个国家 / 城",再取消选中(在输入框里打字时不管)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -2933,7 +3011,8 @@ export function App() {
       if (mk.placing) return stopPlacing();
       if (mk.draft) return cancelDraft();
       if (getPolityPick()) return setPolityPick(null);
-      clearSelection();
+      // 关闭当前面板(清选中 / 收起概览,当前条目归一化为 base,不加记录);Back / Forward 才负责回退
+      closePanel();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -3137,7 +3216,7 @@ export function App() {
     const id = v && v.focus > 0 ? v.rows[0].id : -1;
     if (id < 0 || !real.polities[id]) return;
     const r = resolveKey(previewRaw, polityKey(real, id));
-    if (r && r.kind === 'polity') setSelection({ kind: 'polity', id: r.id });
+    if (r && r.kind === 'polity') setSelectionSilent({ kind: 'polity', id: r.id });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [previewRaw]);
   // 详情面板只挂一份:挂进一个自己建的容器,窄屏把容器放在底部卡片的位置,宽屏放进侧栏(放哪儿由那边的空位 ref 决定)。

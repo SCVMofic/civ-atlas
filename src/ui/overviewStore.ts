@@ -73,6 +73,12 @@ export function useOverview(): OverviewState {
   );
 }
 
+/** 不经过 React 订阅概览的开合(阶段 2:nav 观察"用户打开概览"来写历史) */
+export function subscribeOverview(f: () => void): () => void {
+  subs.add(f);
+  return () => subs.delete(f);
+}
+
 /** 打开概览(不给 tab = 停在上次那一页);opts 给编年史页设筛选 */
 export function openOverview(tab?: OverviewTab, opts: OverviewOpts = {}) {
   const patch: Partial<ChronicleView> = {};

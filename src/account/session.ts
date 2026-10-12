@@ -17,6 +17,7 @@
  */
 import { useSyncExternalStore } from 'react';
 import { getSecrets, setSecret } from '../ai/settings';
+import { replaceUrl } from '../ui/nav';
 import { ServerError, call, serverBase, setAuthLostHandler } from './server';
 
 export interface AccountUser {
@@ -219,7 +220,7 @@ export function takeInviteFromUrl(): string | null {
   if (v === null) return null;
   q.delete('invite');
   const rest = q.toString();
-  history.replaceState(null, '', (rest ? `?${rest}` : location.pathname) + location.hash);
+  replaceUrl((rest ? `?${rest}` : location.pathname) + location.hash);
   const code = v.trim().slice(0, 40);
   if (code) invite = code;
   return code || null;
